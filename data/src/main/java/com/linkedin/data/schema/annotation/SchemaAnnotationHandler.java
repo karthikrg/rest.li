@@ -19,6 +19,7 @@ import com.linkedin.data.message.Message;
 import com.linkedin.data.message.MessageList;
 import com.linkedin.data.schema.DataSchema;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -132,6 +133,24 @@ public interface SchemaAnnotationHandler
                                       ValidationMetaData metaData);
 
   /**
+   * Return an implementation of {@link DataSchemaRichContextTraverser.SchemaVisitor} this handler should work with.
+   *
+   * The {@link SchemaAnnotationProcessor} would invoke the implementation of the {@link DataSchemaRichContextTraverser.SchemaVisitor}
+   * to traverse the schema and handle the annotations handled by this handler.
+   *
+   * @return return an implementation of {@link DataSchemaRichContextTraverser.SchemaVisitor} that could get called by {@link SchemaAnnotationProcessor}
+   *
+   * also see {@link DataSchemaRichContextTraverser.SchemaVisitor}
+   * also see {@link PathSpecBasedSchemaAnnotationVisitor}
+   *
+   */
+  default DataSchemaRichContextTraverser.SchemaVisitor getVisitor()
+  {
+    return DataSchemaTraverserVisitorFactory.createRichContextTraverserVisitor(this);
+  }
+
+
+  /**
    * Result the {@link #resolve(List, ResolutionMetaData)} function should return after it is called
    *
    */
@@ -155,6 +174,11 @@ public interface SchemaAnnotationHandler
     public void setMessages(MessageList<Message> messages)
     {
       _messages = messages;
+    }
+
+    public void addMessages(Collection<? extends Message> messages)
+    {
+      _messages.addAll(messages);
     }
 
     public void addMessage(List<String> path, String format, Object... args)
@@ -190,6 +214,12 @@ public interface SchemaAnnotationHandler
 
   /**
    * Result the {@link #validate(List, Map, DataSchema, ValidationMetaData)} function should return after it is called
+   *
+   * if the {@link #isValid()} returns false, the error messages that {@link #getMessages()} returned will be aggregated
+   * and when aggregating, {@link SchemaAnnotationValidationVisitor} will add pathSpec of the iteration location to each message
+   * so ideally the message {@link #getMessages()} returns doesn't need to specify the location.
+   *
+   * also see {@link SchemaAnnotationValidationVisitor}
    *
    */
   class AnnotationValidationResult
@@ -227,6 +257,16 @@ public interface SchemaAnnotationHandler
     public void addMessage(List<String> path, String format, Object... args)
     {
       _messages.add(new Message(path.toArray(), format, args));
+    }
+
+    public void addMessage(Message msg)
+    {
+      _messages.add(msg);
+    }
+
+    public void addMessages(Collection<? extends Message> messages)
+    {
+      _messages.addAll(messages);
     }
 
     boolean _isValid = true;
