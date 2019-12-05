@@ -7,6 +7,7 @@ import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import org.testng.Assert;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -161,6 +162,7 @@ public class TestSchemaAnnotationProcessor
             Arrays.asList(Arrays.asList("/primitive_field", "customAnnotation=TYPEREF1"),
                           Arrays.asList("/primitive_field2", "customAnnotation=TYPEREF3"),
                           Arrays.asList("/primitive_field3", "customAnnotation=TYPEREF4"),
+                          Arrays.asList("/primitive_field4", "customAnnotation=TYPEREF5"),
                           Arrays.asList("/a/$key", ""),
                           Arrays.asList("/a/*/a", "customAnnotation=TYPEREF1"),
                           Arrays.asList("/b/a", "customAnnotation=original_nested"),
@@ -250,6 +252,12 @@ public class TestSchemaAnnotationProcessor
     SchemaAnnotationProcessor.SchemaAnnotationProcessResult result =
         SchemaAnnotationProcessor.process(Arrays.asList(customAnnotationHandler), dataSchema,
                                           new SchemaAnnotationProcessor.AnnotationProcessOption());
+
+    ResolvedPropertiesReaderVisitor resolvedPropertiesReaderVisitor = new ResolvedPropertiesReaderVisitor();
+    DataSchemaRichContextTraverser traverser = new DataSchemaRichContextTraverser(resolvedPropertiesReaderVisitor);
+    traverser.traverse(result.getResultSchema());
+    Map<String, Map<String, Object>> pathSpecToResolvedPropertiesMap = resolvedPropertiesReaderVisitor.getLeafFieldsPathSpecToResolvedPropertiesMap();
+    Assert.assertEquals(pathSpecToResolvedPropertiesMap.entrySet().size(), expected.size());
 
     for (List<String> pair : expected)
     {

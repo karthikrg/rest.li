@@ -52,18 +52,27 @@ public class DataSchemaRichContextTraverser
    * }
    * </pre>
    *
-   * This hashmap help the traverser to recognize when encountering "Rcd" for the second time.
+   * But it will not prevent traversing a seen data schema that is from non-ancestor
+   * e.g.
+   * <pre>
+   *   record Rcd {
+   *     f1: Rcd2
+   *     f2: Rcd2
+   *   }
+   * </pre>
+   * In this case, both f1 and f2 will be visited.
+   *
+   * This HashMap help the traverser to recognize when encountering "Rcd" for the second time.
    */
-  private final IdentityHashMap<DataSchema, Boolean> _seenDataSchema = new IdentityHashMap<>();
+  private final IdentityHashMap<DataSchema, Boolean> _seenAncestorsDataSchema = new IdentityHashMap<>();
   private SchemaVisitor _schemaVisitor;
   /**
    * Store the original data schema that has been passed.
-   * The {@link DataSchemaRichContextTraverser} should no modify this DataSchema during the traversal
+   * The {@link DataSchemaRichContextTraverser} should not modify this DataSchema during the traversal
    * which could ensure the correctness of the traversal
    *
    */
   private DataSchema _originalDataSchemaUnderTraversal;
-
 
   public DataSchemaRichContextTraverser(SchemaVisitor schemaVisitor)
   {
@@ -76,15 +85,13 @@ public class DataSchemaRichContextTraverser
     TraverserContext traverserContext = new TraverserContext();
     traverserContext.setCurrentSchema(schema);
     traverserContext.setVisitorContext(_schemaVisitor.getInitialVisitorContext());
-    onRecursion(traverserContext);
-
+    doRecursiveTraversal(traverserContext);
   }
 
-  private void onRecursion(TraverserContext context)
+  private void doRecursiveTraversal(TraverserContext context)
   {
 
     // Add full name to the context's TraversePath
-    // For NamedDataSchema, it would return Full Name
     DataSchema schema = context.getCurrentSchema();
     ArrayDeque<String> path = context.getTraversePath();
     path.add(schema.getUnionMemberKey());
@@ -96,91 +103,86 @@ public class DataSchemaRichContextTraverser
      * By default {@link DataSchemaRichContextTraverser} will only decide whether or not keep traversing based on whether the new
      * data schema has been seen.
      *
-     * But the {@link SchemaVisitor} has the chance to override this control by setting {@link TraverserContext#shouldContinue}
+     * But the {@link SchemaVisitor} has the chance to override this control by setting {@link TraverserContext#_shouldContinue}
+     * If this variable set to be {@link Boolean#TRUE}, the {@link DataSchemaRichContextTraverser} will traverse to next level (if applicable)
+     * If this variable set to be {@link Boolean#FALSE}, the {@link DataSchemaRichContextTraverser} will stop traversing to next level
+     * If this variable not set, the {@link DataSchemaRichContextTraverser} will decide whether or not to continue traversing based on whether
+     * this data schema has been seen.
      */
-    if (context.shouldContinue() == Boolean.TRUE || !(context.shouldContinue() == Boolean.FALSE || _seenDataSchema.containsKey(schema)) )
+    if (context.shouldContinue() == Boolean.TRUE ||
+        !(context.shouldContinue() == Boolean.FALSE || _seenAncestorsDataSchema.containsKey(schema)))
     {
-      _seenDataSchema.put(schema, Boolean.TRUE);
+      _seenAncestorsDataSchema.put(schema, Boolean.TRUE);
 
-      //Pass new context in every recursion
-      TraverserContext nextContext = context.getNextContext();
+      // Pass new context in every recursion
+      TraverserContext nextContext = null;
 
       switch (schema.getType())
       {
         case TYPEREF:
           TyperefDataSchema typerefDataSchema = (TyperefDataSchema) schema;
-          nextContext.getTraversePath().add(DataSchemaConstants.REF_KEY);
-          nextContext.setCurrentSchema(typerefDataSchema.getRef());
-          nextContext.setCurrentSchemaEntryMode(CurrentSchemaEntryMode.TYPEREF_REF);
-          // Set other few
-          onRecursion(nextContext);
+          
+          nextContext = context.getNextContext(DataSchemaConstants.REF_KEY, null, typerefDataSchema.getRef(),
+                                               CurrentSchemaEntryMode.TYPEREF_REF);
+          doRecursiveTraversal(nextContext);
           break;
         case MAP:
-          //traverse key if has matched
+          // traverse key
           MapDataSchema mapDataSchema = (MapDataSchema) schema;
-          nextContext.getTraversePath().add(DataSchemaConstants.MAP_KEY_REF);
-          nextContext.getSchemaPathSpec().add(DataSchemaConstants.MAP_KEY_REF);
-          nextContext.setCurrentSchema(mapDataSchema.getKey());
-          nextContext.setCurrentSchemaEntryMode(CurrentSchemaEntryMode.MAP_KEY);
 
-          onRecursion(nextContext);
+          nextContext = context.getNextContext(DataSchemaConstants.MAP_KEY_REF, DataSchemaConstants.MAP_KEY_REF,
+                                               mapDataSchema.getKey(), CurrentSchemaEntryMode.MAP_KEY);
+          doRecursiveTraversal(nextContext);
 
-          //then traverse values
-          nextContext.setTraversePath(new ArrayDeque<>(path));
-          nextContext.getTraversePath().add(PathSpec.WILDCARD);
-          nextContext.setSchemaPathSpec(new ArrayDeque<>(context.getSchemaPathSpec()));
-          nextContext.getSchemaPathSpec().add(PathSpec.WILDCARD);
-
-          nextContext.setCurrentSchema(mapDataSchema.getValues());
-          nextContext.setCurrentSchemaEntryMode(CurrentSchemaEntryMode.MAP_VALUE);
-
-          nextContext.setVisitorContext(context.getVisitorContext());
-
-          onRecursion(nextContext);
+          // then traverse values
+          nextContext = context.getNextContext(PathSpec.WILDCARD, PathSpec.WILDCARD, mapDataSchema.getValues(),
+                                               CurrentSchemaEntryMode.MAP_VALUE);
+          doRecursiveTraversal(nextContext);
           break;
         case ARRAY:
           ArrayDataSchema arrayDataSchema = (ArrayDataSchema) schema;
-          nextContext.getTraversePath().add(PathSpec.WILDCARD);
-          nextContext.getSchemaPathSpec().add(PathSpec.WILDCARD);
-          nextContext.setCurrentSchema(arrayDataSchema.getItems());
-          nextContext.setCurrentSchemaEntryMode(CurrentSchemaEntryMode.ARRAY_VALUE);
 
-          onRecursion(nextContext);
+          nextContext = context.getNextContext(PathSpec.WILDCARD, PathSpec.WILDCARD, arrayDataSchema.getItems(),
+                                               CurrentSchemaEntryMode.ARRAY_VALUE);
+          doRecursiveTraversal(nextContext);
           break;
         case RECORD:
           RecordDataSchema recordDataSchema = (RecordDataSchema) schema;
           for (RecordDataSchema.Field field : recordDataSchema.getFields())
           {
-            nextContext.setTraversePath(new ArrayDeque<>(path));
-            nextContext.getTraversePath().add(field.getName());
-            nextContext.setSchemaPathSpec(new ArrayDeque<>(context.getSchemaPathSpec()));
-            nextContext.getSchemaPathSpec().add(field.getName());
+//            nextContext.setTraversePath(new ArrayDeque<>(path));
+//            nextContext.getTraversePath().add(field.getName());
+//            nextContext.setSchemaPathSpec(new ArrayDeque<>(context.getSchemaPathSpec()));
+//            nextContext.getSchemaPathSpec().add(field.getName());
+//
+//            nextContext.setCurrentSchema(field.getType());
+//            nextContext.setCurrentSchemaEntryMode(CurrentSchemaEntryMode.FIELD);
+//            nextContext.setEnclosingField(field);
 
-            nextContext.setCurrentSchema(field.getType());
-            nextContext.setCurrentSchemaEntryMode(CurrentSchemaEntryMode.FIELD);
+            nextContext =
+                context.getNextContext(field.getName(), field.getName(), field.getType(), CurrentSchemaEntryMode.FIELD);
             nextContext.setEnclosingField(field);
-
-            nextContext.setVisitorContext(context.getVisitorContext());
-
-            onRecursion(nextContext);
+            doRecursiveTraversal(nextContext);
           }
           break;
         case UNION:
           UnionDataSchema unionDataSchema = (UnionDataSchema) schema;
           for (UnionDataSchema.Member member : unionDataSchema.getMembers())
           {
-            nextContext.setTraversePath(new ArrayDeque<>(path));
-            nextContext.getTraversePath().add(member.getUnionMemberKey());
-            nextContext.setSchemaPathSpec(new ArrayDeque<>(context.getSchemaPathSpec()));
-            nextContext.getSchemaPathSpec().add(member.getUnionMemberKey());
+//            nextContext.setTraversePath(new ArrayDeque<>(path));
+//            nextContext.getTraversePath().add(member.getUnionMemberKey());
+//            nextContext.setSchemaPathSpec(new ArrayDeque<>(context.getSchemaPathSpec()));
+//            nextContext.getSchemaPathSpec().add(member.getUnionMemberKey());
+//
+//            nextContext.setCurrentSchema(member.getType());
+//            nextContext.setCurrentSchemaEntryMode(CurrentSchemaEntryMode.UNION_MEMBER);
+//            nextContext.setEnclosingUnionMember(member);
 
-            nextContext.setCurrentSchema(member.getType());
-            nextContext.setCurrentSchemaEntryMode(CurrentSchemaEntryMode.UNION_MEMBER);
+            nextContext =
+                context.getNextContext(member.getUnionMemberKey(), member.getUnionMemberKey(), member.getType(),
+                                       CurrentSchemaEntryMode.UNION_MEMBER);
             nextContext.setEnclosingUnionMember(member);
-
-            nextContext.setVisitorContext(context.getVisitorContext());
-
-            onRecursion(nextContext);
+            doRecursiveTraversal(nextContext);
           }
           break;
         case FIXED:
@@ -192,7 +194,7 @@ public class DataSchemaRichContextTraverser
           assert (schema.isPrimitive());
           break;
       }
-      _seenDataSchema.remove(schema);
+      _seenAncestorsDataSchema.remove(schema);
     }
     _schemaVisitor.callbackOnContext(context, DataSchemaTraverse.Order.POST_ORDER);
   }
@@ -203,28 +205,23 @@ public class DataSchemaRichContextTraverser
   enum CurrentSchemaEntryMode
   {
     // child schema is a record field
-    FIELD,
-    // child schema is key field of map
-    MAP_KEY,
-    // child schema is value field of map
-    MAP_VALUE,
-    // child schema is value field of array
-    ARRAY_VALUE,
-    // child schema is a member of union
-    UNION_MEMBER,
-    // child schema is referred from a typeref schema
-    TYPEREF_REF
+    FIELD, // child schema is key field of map
+  MAP_KEY, // child schema is value field of map
+  MAP_VALUE, // child schema is value field of array
+  ARRAY_VALUE, // child schema is a member of union
+  UNION_MEMBER, // child schema is referred from a typeref schema
+  TYPEREF_REF
   }
 
   /**
-   * Interface for SchemaVisitor, which will be called by {@link DataSchemaRichContextTraverser}
+   * Interface for SchemaVisitor, which will be called by {@link DataSchemaRichContextTraverser}.
    */
   public interface SchemaVisitor
   {
     /**
-     * the callback function that will be called by {@link DataSchemaRichContextTraverser} visiting the dataSchema under traversal
-     * this function will be called TWICE within {@link DataSchemaRichContextTraverser}, during two {@link DataSchemaTraverse.Order}s
-     * {@link DataSchemaTraverse.Order#PRE_ORDER} and {@link DataSchemaTraverse.Order#POST_ORDER} respectively
+     * The callback function that will be called by {@link DataSchemaRichContextTraverser} visiting the dataSchema under traversal.
+     * This function will be called TWICE within {@link DataSchemaRichContextTraverser}, during two {@link DataSchemaTraverse.Order}s
+     * {@link DataSchemaTraverse.Order#PRE_ORDER} and {@link DataSchemaTraverse.Order#POST_ORDER} respectively.
      *
      * @param context
      * @param order the order given by {@link DataSchemaRichContextTraverser} to tell whether this call happens during pre order or post order
@@ -232,10 +229,10 @@ public class DataSchemaRichContextTraverser
     void callbackOnContext(TraverserContext context, DataSchemaTraverse.Order order);
 
     /**
-     * {@link SchemaVisitor} implements this method to return a initial {@link VisitorContext}
+     * {@link SchemaVisitor} implements this method to return an initial {@link VisitorContext}
      * {@link VisitorContext} will be stored inside {@link TraverserContext} and then passed to {@link SchemaVisitor} during recursive traversal
      *
-     * @return a initial {@link VisitorContext} defined and initialized by {@link SchemaVisitor}
+     * @return an initial {@link VisitorContext} that will be stored by {@link SchemaVisitor}
      *
      * also see {@link VisitorContext}
      *
@@ -248,23 +245,10 @@ public class DataSchemaRichContextTraverser
      * @return traversal result after the visitor traversed the schema
      */
     VisitorTraversalResult getVisitorTraversalResult();
-
-    /**
-     * The {@link SchemaVisitor} implementation can construct a new {@link DataSchema} after visiting the traversal.
-     * The {@link SchemaVisitor} should not mutate the original {@link DataSchema} that {@link DataSchemaRichContextTraverser} is traversing.
-     *
-     * This is useful if a new {@link DataSchema} needs to be produced for later use
-     *
-     * @return a schema if the visitor is constructing one, otherwise return null;
-     */
-    default DataSchema getConstructedSchema()
-    {
-      return null;
-    }
   }
 
   /**
-   * A context that is defined and handled by {@link SchemaVisitor} themselves
+   * A context that is defined and handled by {@link SchemaVisitor}
    *
    * The {@link DataSchemaRichContextTraverser} will get the initial context and then
    * passing this as part of {@link TraverserContext}
@@ -280,7 +264,7 @@ public class DataSchemaRichContextTraverser
   }
 
   /**
-   * The traversal result stores states of the traversal result
+   * The traversal result stores states of the traversal result for each visitor.
    * It should tell whether the traversal is successful and stores error messages if not
    *
    * There are two kinds of error messages
@@ -292,6 +276,31 @@ public class DataSchemaRichContextTraverser
    */
   public static class VisitorTraversalResult
   {
+
+    boolean _isTraversalSuccessful = true;
+    MessageList<Message> _messages = new MessageList<>();
+    StringBuilder _messageBuilder = new StringBuilder();
+    /**
+     * The {@link SchemaVisitor} implementation can construct a new {@link DataSchema} after visiting the traversal.
+     * The {@link SchemaVisitor} should not mutate the original {@link DataSchema} that {@link DataSchemaRichContextTraverser} is traversing.
+     * so if the {@link SchemaVisitor} needs to update the schema, it needs to construct on it own.
+     * This is useful if a new {@link DataSchema} needs to be produced for later use
+     *
+     * if the visitor is constructing one, it should store the schema inside this {@link VisitorTraversalResult}
+     * otherwise this variable could remain null;
+     */
+    DataSchema _constructedSchema = null;
+
+    public DataSchema getConstructedSchema()
+    {
+      return _constructedSchema;
+    }
+
+    public void setConstructedSchema(DataSchema constructedSchema)
+    {
+      _constructedSchema = constructedSchema;
+    }
+
     /**
      * Return whether there are errors detected during the traversal
      * @return boolean to tell whether the traversal is successful or not
@@ -355,13 +364,11 @@ public class DataSchemaRichContextTraverser
     public void addMessage(ArrayDeque<String> path, String format, Object... args)
     {
       Message msg = new Message(path.toArray(), format, args);
-      _messages.add(msg);
-      MessageUtil.appendMessages(getMessageBuilder(), Arrays.asList(msg));
-      setTraversalSuccessful(false);
+      addMessage(msg);
     }
 
     /**
-     * add multiple {@link Message}s to the message list and the string builder
+     * Add multiple {@link Message}s to the message list and the string builder
      * These message added shows same path
      *
      * @param path path of the location where the messages are added
@@ -380,23 +387,22 @@ public class DataSchemaRichContextTraverser
     }
 
     /**
-     * construct messages using literal strings and add to the message list and the string builder
+     * Construct messages using literal strings and add to the message list and the string builder
      *
      * @param path path to show in the message
      * @param literalMessages the literal message content
      */
     public void addMessages(List<String> path, List<String> literalMessages)
     {
-      List<Message> msgs = literalMessages.stream()
-                                   .map(msg -> new Message(path.toArray(), msg))
-                                   .collect(Collectors.toList());
+      List<Message> msgs =
+          literalMessages.stream().map(msg -> new Message(path.toArray(), msg)).collect(Collectors.toList());
       _messages.addAll(msgs);
       MessageUtil.appendMessages(getMessageBuilder(), msgs);
       setTraversalSuccessful(false);
     }
 
     /**
-     * add multiple {@link Message}s to the message list and the string builder
+     * Add multiple {@link Message}s to the message list and the string builder
      *
      * @param messages collection of {@link Message}s
      */
@@ -408,7 +414,7 @@ public class DataSchemaRichContextTraverser
     }
 
     /**
-     * add string to message string builder directly
+     * Add string to message string builder directly
      *
      * @param message
      */
@@ -431,10 +437,6 @@ public class DataSchemaRichContextTraverser
     {
       return getMessageBuilder().toString();
     }
-
-    boolean _isTraversalSuccessful = true;
-    MessageList<Message> _messages = new MessageList<>();
-    StringBuilder _messageBuilder = new StringBuilder();
   }
 
   /**
@@ -445,28 +447,13 @@ public class DataSchemaRichContextTraverser
   static class TraverserContext
   {
 
-
-    // Use this flag to control whether continue traversing child schemas
-    Boolean shouldContinue = null;
-    DataSchema _currentSchema;
-
     /**
-     * return {@link Boolean} object to tell the {@link DataSchemaRichContextTraverser} whether the traversal should continue
-     * If this variable set to be {@link Boolean#TRUE}, the {@link DataSchemaRichContextTraverser} will traverse to next level (if applicable)
-     * If this variable set to be {@link Boolean#FALSE}, the {@link DataSchemaRichContextTraverser} will stop traversing to next level
-     * If this variable not set, the {@link DataSchemaRichContextTraverser} will decide whether or not to continue traversing
+     * Use this flag to control whether DataSchemaRichContextTraverser should continue to traverse.
+     * This variable can be set to null if want default behavior.
      *
-     * @return the {@link Boolean} variable
      */
-    public Boolean shouldContinue()
-    {
-      return shouldContinue;
-    }
-
-    public void setShouldContinue(Boolean shouldContinue)
-    {
-      this.shouldContinue = shouldContinue;
-    }
+    Boolean _shouldContinue = null;
+    DataSchema _currentSchema;
     /**
      * This traverse path is a very detailed path, and is same as the path used in {@link DataSchemaTraverse}
      * This path's every component corresponds to a move by traverser, and its components have TypeRef components and record name.
@@ -510,7 +497,7 @@ public class DataSchemaRichContextTraverser
     /**
      * SchemaAnnotationVisitors can set customized context
      * see {@link VisitorContext}
-    */
+     */
     VisitorContext _visitorContext;
 
     VisitorContext getVisitorContext()
@@ -519,20 +506,39 @@ public class DataSchemaRichContextTraverser
     }
 
     /**
-     * Generate a new {@link TraverserContext} for next recursion in {@link #onRecursion(TraverserContext)}
+     * Generate a new {@link TraverserContext} for next recursion in {@link #doRecursiveTraversal(TraverserContext)}
      * @return a new {@link TraverserContext} generated for next recursion
      */
-    TraverserContext getNextContext()
+    TraverserContext getNextContext(String traversePathComponent, String schemaPathSpecComponent,
+                                    DataSchema currentSchema, CurrentSchemaEntryMode currentSchemaEntryMode)
     {
       TraverserContext nextContext = new TraverserContext();
-      nextContext.setTraversePath(new ArrayDeque<>(this.getTraversePath()));
       nextContext.setParentSchema(this.getCurrentSchema());
       nextContext.setSchemaPathSpec(new ArrayDeque<>(this.getSchemaPathSpec()));
       nextContext.setVisitorContext(this.getVisitorContext());
       nextContext.setEnclosingField(this.getEnclosingField());
       nextContext.setEnclosingUnionMember(this.getEnclosingUnionMember());
-      return nextContext;
 
+      nextContext.setTraversePath(new ArrayDeque<>(this.getTraversePath()));
+      nextContext.getTraversePath().add(traversePathComponent);
+      nextContext.setSchemaPathSpec(new ArrayDeque<>(this.getSchemaPathSpec()));
+      if (schemaPathSpecComponent != null)
+      {
+        nextContext.getSchemaPathSpec().add(schemaPathSpecComponent);
+      }
+      nextContext.setCurrentSchema(currentSchema);
+      nextContext.setCurrentSchemaEntryMode(currentSchemaEntryMode);
+      return nextContext;
+    }
+
+    public Boolean shouldContinue()
+    {
+      return _shouldContinue;
+    }
+
+    public void setShouldContinue(Boolean shouldContinue)
+    {
+      this._shouldContinue = shouldContinue;
     }
 
     void setVisitorContext(VisitorContext visitorContext)

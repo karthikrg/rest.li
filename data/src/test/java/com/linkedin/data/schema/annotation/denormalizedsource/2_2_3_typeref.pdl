@@ -3,6 +3,9 @@ record TestTypeRef {
   primitive_field2: @customAnnotation="TYPEREF3" typeref typeref3_name= int
   primitive_field3: @customAnnotation="TYPEREF4" typeref typeref4_name= int
 
+  @customAnnotation="TYPEREF5"
+  primitive_field4: typeref typeref5_name= int
+
 
   a: @customAnnotation={"/*/a":"TYPEREF1"} typeref maptyperef1_name=@customAnnotation={"/*/a":"TYPEREF2"} typeref maptyperef2_name = map[string,
     record nestedRecord { @customAnnotation="original_nested" a : int }]

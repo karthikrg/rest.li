@@ -197,12 +197,6 @@ public class PathSpecBasedSchemaAnnotationVisitor implements DataSchemaRichConte
   }
 
   @Override
-  public DataSchema getConstructedSchema()
-  {
-    return _schemaConstructed;
-  }
-
-  @Override
   public void callbackOnContext(TraverserContext context, DataSchemaTraverse.Order order)
   {
 
@@ -225,11 +219,16 @@ public class PathSpecBasedSchemaAnnotationVisitor implements DataSchemaRichConte
                                                  pathStruct.getOriginalPathString());
         }
       }
+
+      if (context.getParentSchema() == null)
+      {
+        getVisitorTraversalResult().setConstructedSchema(_schemaConstructed);
+      }
       return;
     }
 
     VisitorContext visitorContext = context.getVisitorContext();
-    //Prepare visitorContext for next level recursion
+    // Prepare visitorContext for next level recursion
     PathSpecTraverseVisitorContext newVisitorContext = new PathSpecTraverseVisitorContext();
     // {@link PathSpecBasedSchemaAnnotationVisitor} will build new skeleton schema when visiting {@link TraversalContext}
     // If there has been a skeleton schema already built for one data schema, it will reuse that cached one
@@ -329,7 +328,6 @@ public class PathSpecBasedSchemaAnnotationVisitor implements DataSchemaRichConte
       // Note: Cyclic referencing in TypeRef is handled in the similar way, de-referenced Schema of parent schema is the currentSchema here
       if (currentSchema.getType() == DataSchema.Type.RECORD)
       {
-
         String childSchemaFullName = ((RecordDataSchema) currentSchema).getFullName();
         for (PathStruct pathStruct: currentOverrides)
         {
@@ -352,7 +350,7 @@ public class PathSpecBasedSchemaAnnotationVisitor implements DataSchemaRichConte
             return;
           } else
           {
-            //If no cycles found1A, add to current edges seen
+            // If no cycles found, add to current edges seen
             _directedEdges.computeIfAbsent(overrideStartSchemaName, key -> new HashSet<>()).add(overrideEndSchemaName);
           }
         }
@@ -375,7 +373,7 @@ public class PathSpecBasedSchemaAnnotationVisitor implements DataSchemaRichConte
                                                                                context.getSchemaPathSpec())); // Actually use resolve rules here
           }
 
-          //Do pathStruct validity checking
+          // Do pathStruct validity checking
           for (PathStruct pathStruct : currentOverrides)
           {
             if (pathStruct.isOverride())
@@ -399,7 +397,7 @@ public class PathSpecBasedSchemaAnnotationVisitor implements DataSchemaRichConte
           assert(currentOverrides.stream().noneMatch(PathStruct::isOverride) ||
                  currentOverrides.stream().allMatch(PathStruct::isOverride));
 
-          //Do pathStruct validity checking
+          // Do pathStruct validity checking
           for (PathStruct pathStruct : currentOverrides)
           {
             if(pathStruct.isOverride() && (pathStruct.getRemainingPaths().size() == 0))
@@ -417,8 +415,8 @@ public class PathSpecBasedSchemaAnnotationVisitor implements DataSchemaRichConte
                                                       (pathStruct.getOverridePathValidStatus() ==
                                                        PathStruct.OverridePathValidStatus.UNCHECKED)))
           {
-            //If there are unresolved overrides that resolving to complex data schema
-            //Need to tell the traverser to continue traversing
+            // If there are unresolved overrides that resolving to complex data schema
+            // Need to tell the traverser to continue traversing
             newSkeletonSchemaOrReUse = createSchemaAndAttachToParent(context, true);
             context.setShouldContinue(Boolean.TRUE);
           }
@@ -438,7 +436,7 @@ public class PathSpecBasedSchemaAnnotationVisitor implements DataSchemaRichConte
 
     if (currentSchema.getType() == DataSchema.Type.RECORD && ((RecordDataSchema)currentSchema).getInclude().size() > 0)
     {
-      //Process includes
+      // Process includes
       currentOverrides.addAll(generatePathStructFromInclude((RecordDataSchema) currentSchema, context.getTraversePath()));
     }
 
@@ -454,7 +452,7 @@ public class PathSpecBasedSchemaAnnotationVisitor implements DataSchemaRichConte
                                                          ArrayDeque<String> pathOfOrigin)
   {
 
-    //Include can only be overrides
+    // Include can only be overrides
     return constructOverridePathStructFromProperties(dataSchema.getProperties(),
                                                      PathStruct.TypeOfOrigin.OVERRIDE_RECORD_FOR_INCLUDE,
                                                      pathOfOrigin,
@@ -466,7 +464,8 @@ public class PathSpecBasedSchemaAnnotationVisitor implements DataSchemaRichConte
   private List<PathStruct> generatePathStructFromField(RecordDataSchema.Field field,
                                                        ArrayDeque<String> pathOfOrigin)
   {
-    if ((couldStoreResolvedPropertiesInSchema(field.getType())))
+    if ((couldStoreResolvedPropertiesInSchema(field.getType())) ||
+        ((field.getType().getType() == DataSchema.Type.TYPEREF) && couldStoreResolvedPropertiesInSchema(field.getType().getDereferencedDataSchema())))
     {
       if (field.getProperties().get(getAnnotationNamespace()) != null)
       {
@@ -492,26 +491,26 @@ public class PathSpecBasedSchemaAnnotationVisitor implements DataSchemaRichConte
                                                                ArrayDeque<String> pathOfOrigin)
   {
     List<PathStruct> typeRefPathStructs = new ArrayList<>();
-    if (!couldStoreResolvedPropertiesInSchema(dataSchema.getDereferencedDataSchema()))
+    if (couldStoreResolvedPropertiesInSchema(dataSchema.getDereferencedDataSchema()))
     {
-      //Should treat as overriding
+      if (dataSchema.getProperties().get(getAnnotationNamespace()) != null)
+      {
+        typeRefPathStructs.addAll(constructNonOverridePathStructFromProperties(dataSchema.getFullName(),
+                                                                               dataSchema.getProperties().get(getAnnotationNamespace()),
+                                                                               PathStruct.TypeOfOrigin.NON_OVERRIDE_TYPE_REF,
+                                                                               pathOfOrigin,dataSchema));
+      }
+    } else
+    {
+      // Should treat as overriding
       List<PathStruct> pathStructToReturn = constructOverridePathStructFromProperties(dataSchema.getProperties(),
                                                                                       PathStruct.TypeOfOrigin.OVERRIDE_TYPE_REF_OVERRIDE,
                                                                                       pathOfOrigin,
                                                                                       dataSchema,
                                                                                       dataSchema.getFullName());
       typeRefPathStructs.addAll(pathStructToReturn);
-      //Need to add this "virtual" matched path for TypeRef
+      // Need to add this "virtual" matched path for TypeRef
       typeRefPathStructs.forEach(pathStruct -> pathStruct.getMatchedPaths().add(dataSchema.getFullName()));
-    } else
-    {
-      if (dataSchema.getProperties().get(getAnnotationNamespace()) != null)
-      {
-        typeRefPathStructs.addAll(constructNonOverridePathStructFromProperties(dataSchema.getFullName(),
-                                                            dataSchema.getProperties().get(getAnnotationNamespace()),
-                                                            PathStruct.TypeOfOrigin.NON_OVERRIDE_TYPE_REF,
-                                                            pathOfOrigin,dataSchema));
-      }
     }
 
     return typeRefPathStructs;
@@ -574,7 +573,7 @@ public class PathSpecBasedSchemaAnnotationVisitor implements DataSchemaRichConte
                                                                      .collect(toList());
     for (String malformatedKey : malformatedKeys)
     {
-      getVisitorTraversalResult().addMessage(pathOfOrigin, "MalFormated key as pathspec found: %s", malformatedKey);
+      getVisitorTraversalResult().addMessage(pathOfOrigin, "MalFormatted key as PathSpec found: %s", malformatedKey);
     }
 
     List<PathStruct> pathStructToReturn = ((Map<String, Object>) properties).entrySet()

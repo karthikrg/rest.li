@@ -17,6 +17,8 @@ package com.linkedin.data.schema.annotation;
 
 import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.DataSchemaTraverse;
+import com.linkedin.data.schema.EnumDataSchema;
+import com.linkedin.data.schema.FixedDataSchema;
 import com.linkedin.data.schema.PathSpec;
 import java.util.HashMap;
 import java.util.Map;
@@ -24,8 +26,8 @@ import java.util.stream.Collectors;
 
 
 /**
- * This visitor will iterate over all leaf data schema which could contain stores resolvedProperties after data schemas
- * are processed.
+ * This visitor will iterate over all leaf data schemas which could stores resolvedProperties after annotations in data schemas
+ * are resolved.
  *
  * The resolvedProperties will be stored in a map. For example,
  * <pre>{@code
@@ -58,6 +60,15 @@ import java.util.stream.Collectors;
  * }
  * </pre>
  *
+ * This map can be built by following way
+ *
+ * <pre>
+ * ResolvedPropertiesReaderVisitor resolvedPropertiesReaderVisitor = new ResolvedPropertiesReaderVisitor();
+ * DataSchemaRichContextTraverser traverser = new DataSchemaRichContextTraverser(resolvedPropertiesReaderVisitor);
+ * traverser.traverse(processedDataSchema);
+ * Map<String, Map<String, Object>> = resolvedPropertiesReaderVisitor.getLeafFieldsPathSpecToResolvedPropertiesMap()
+ * </pre>
+ *
  * a leaf DataSchema is a schema that doesn't have other types of DataSchema linked from it.
  * Below types are leaf DataSchemas
  * {@link com.linkedin.data.schema.PrimitiveDataSchema} ,
@@ -65,11 +76,11 @@ import java.util.stream.Collectors;
  * {@link com.linkedin.data.schema.FixedDataSchema}
  *
  * Other dataSchema types, for example {@link com.linkedin.data.schema.TyperefDataSchema} could link to another DataSchema
- * so it is not a leaf DataSchema *
+ * so it is not a leaf DataSchema
  */
 public class ResolvedPropertiesReaderVisitor implements DataSchemaRichContextTraverser.SchemaVisitor
 {
-  private Map<String, Map<String, Object>> _primitiveFieldsPathSpecToResolvedPropertiesCache = new HashMap<>();
+  private Map<String, Map<String, Object>> _leafFieldsPathSpecToResolvedPropertiesMap = new HashMap<>();
 
   @Override
   public void callbackOnContext(DataSchemaRichContextTraverser.TraverserContext context, DataSchemaTraverse.Order order)
@@ -80,10 +91,11 @@ public class ResolvedPropertiesReaderVisitor implements DataSchemaRichContextTra
     }
 
     DataSchema currentSchema = context.getCurrentSchema();
-    if (PathSpecBasedSchemaAnnotationVisitor.couldStoreResolvedPropertiesInSchema(currentSchema))
+    if( (currentSchema.isPrimitive() || (currentSchema instanceof EnumDataSchema) ||
+         (currentSchema instanceof FixedDataSchema)))
     {
       Map<String, Object> resolvedProperties = currentSchema.getResolvedProperties();
-      _primitiveFieldsPathSpecToResolvedPropertiesCache.put(
+      _leafFieldsPathSpecToResolvedPropertiesMap.put(
           new PathSpec(context.getSchemaPathSpec().toArray(new String[0])).toString(), resolvedProperties);
 
       String mapStringified = resolvedProperties.entrySet().stream().map(e -> e.getKey() + "=" + e.getValue()).collect(
@@ -104,15 +116,15 @@ public class ResolvedPropertiesReaderVisitor implements DataSchemaRichContextTra
     return null;
   }
 
-  public Map<String, Map<String, Object>> getPrimitiveFieldsPathSpecToResolvedPropertiesCache()
+  public Map<String, Map<String, Object>> getLeafFieldsPathSpecToResolvedPropertiesMap()
   {
-    return _primitiveFieldsPathSpecToResolvedPropertiesCache;
+    return _leafFieldsPathSpecToResolvedPropertiesMap;
   }
 
-  public void setPrimitiveFieldsPathSpecToResolvedPropertiesCache(
-      Map<String, Map<String, Object>> primitiveFieldsPathSpecToResolvedPropertiesCache)
+  public void setLeafFieldsPathSpecToResolvedPropertiesMap(
+      Map<String, Map<String, Object>> leafFieldsPathSpecToResolvedPropertiesMap)
   {
-    _primitiveFieldsPathSpecToResolvedPropertiesCache = primitiveFieldsPathSpecToResolvedPropertiesCache;
+    _leafFieldsPathSpecToResolvedPropertiesMap = leafFieldsPathSpecToResolvedPropertiesMap;
   }
 
 }

@@ -108,7 +108,7 @@ public class SchemaAnnotationProcessor
         errorMsgBuilder.append(errorMsgs);
       } else
       {
-        DataSchema visitorConstructedSchema = visitor.getConstructedSchema();
+        DataSchema visitorConstructedSchema = handlerTraverseResult.getConstructedSchema();
         if (visitorConstructedSchema != null)
         {
           // will store the constructed dataSchema from the visitor in the processResult.
@@ -136,7 +136,7 @@ public class SchemaAnnotationProcessor
       SchemaAnnotationValidationVisitor validationVisitor = new SchemaAnnotationValidationVisitor(schemaAnnotationHandler);
       DataSchemaRichContextTraverser traverserBase = new DataSchemaRichContextTraverser(validationVisitor);
       try {
-        traverserBase.traverse(dataSchema);
+        traverserBase.traverse(processResult.getResultSchema());
       }
       catch (Exception e)
       {
@@ -186,9 +186,9 @@ public class SchemaAnnotationProcessor
 
     if (paths.size() == 0 )
     {
-      while ((dataSchema.getType() == DataSchema.Type.TYPEREF))
+      if ((dataSchema.getType() == DataSchema.Type.TYPEREF))
       {
-        dataSchema = ((TyperefDataSchema) dataSchema).getRef();
+        dataSchema = dataSchema.getDereferencedDataSchema();
       }
       return dataSchema;
     }
@@ -248,6 +248,7 @@ public class SchemaAnnotationProcessor
               break;
             }
           default:
+            //illegal state
             break;
         }
       }
@@ -256,9 +257,9 @@ public class SchemaAnnotationProcessor
       throw new IllegalArgumentException(errorMsg);
     }
 
-    while (dataSchema != null && (dataSchema.getType() == DataSchema.Type.TYPEREF))
+    if ((dataSchema.getType() == DataSchema.Type.TYPEREF))
     {
-      dataSchema = ((TyperefDataSchema) dataSchema).getRef();
+      dataSchema = dataSchema.getDereferencedDataSchema();
     }
 
     return dataSchema;
