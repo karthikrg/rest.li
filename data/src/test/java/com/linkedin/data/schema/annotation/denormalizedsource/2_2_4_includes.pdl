@@ -1,0 +1,31 @@
+@customAnnotation={
+  "/a/aa":"/a/aa"
+  "/b":"NONE"
+  "/c/cb":"upper"
+  "/c/cc":"NONE"
+}
+record WithIncluded includes record includeRcd {
+  @customAnnotation={
+    "/aa": "/aa"
+    "/bb": "/bb"
+  }
+  a:  record nestedInclude {
+    aa: string
+    bb: string
+  }
+}
+{
+  b: string
+  c: //cRcd has includes so it has properties to override includes
+    @customAnnotation={
+      "/ca": "includedRcd2"
+    }
+    record cRcd includes
+        record includedRcd2 {
+          ca: string
+          cb: string
+        }
+    {
+      cc: string
+    }
+}

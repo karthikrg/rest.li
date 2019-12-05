@@ -1,0 +1,4 @@
+record Test {
+  f1: Test
+  f2: string
+}

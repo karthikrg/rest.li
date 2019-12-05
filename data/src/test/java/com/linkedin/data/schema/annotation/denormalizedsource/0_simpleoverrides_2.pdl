@@ -1,0 +1,19 @@
+// simple case with simple overrides
+record test {
+
+  a: record refRcd {
+    @customAnnotation = "NONE"
+    aa: string
+
+    @customAnnotation = [{"data_type":"NAME"}]
+    bb: string
+
+    cc: string
+  }
+
+  @customAnnotation = {
+    "/aa": [{"data_type":"NAME"}],
+    "/bb": "NONE"
+  }
+  b: refRcd
+}
