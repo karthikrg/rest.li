@@ -121,7 +121,7 @@ public class DataSchemaRichContextTraverser
       {
         case TYPEREF:
           TyperefDataSchema typerefDataSchema = (TyperefDataSchema) schema;
-          
+
           nextContext = context.getNextContext(DataSchemaConstants.REF_KEY, null, typerefDataSchema.getRef(),
                                                CurrentSchemaEntryMode.TYPEREF_REF);
           doRecursiveTraversal(nextContext);
@@ -150,15 +150,6 @@ public class DataSchemaRichContextTraverser
           RecordDataSchema recordDataSchema = (RecordDataSchema) schema;
           for (RecordDataSchema.Field field : recordDataSchema.getFields())
           {
-//            nextContext.setTraversePath(new ArrayDeque<>(path));
-//            nextContext.getTraversePath().add(field.getName());
-//            nextContext.setSchemaPathSpec(new ArrayDeque<>(context.getSchemaPathSpec()));
-//            nextContext.getSchemaPathSpec().add(field.getName());
-//
-//            nextContext.setCurrentSchema(field.getType());
-//            nextContext.setCurrentSchemaEntryMode(CurrentSchemaEntryMode.FIELD);
-//            nextContext.setEnclosingField(field);
-
             nextContext =
                 context.getNextContext(field.getName(), field.getName(), field.getType(), CurrentSchemaEntryMode.FIELD);
             nextContext.setEnclosingField(field);
@@ -169,15 +160,6 @@ public class DataSchemaRichContextTraverser
           UnionDataSchema unionDataSchema = (UnionDataSchema) schema;
           for (UnionDataSchema.Member member : unionDataSchema.getMembers())
           {
-//            nextContext.setTraversePath(new ArrayDeque<>(path));
-//            nextContext.getTraversePath().add(member.getUnionMemberKey());
-//            nextContext.setSchemaPathSpec(new ArrayDeque<>(context.getSchemaPathSpec()));
-//            nextContext.getSchemaPathSpec().add(member.getUnionMemberKey());
-//
-//            nextContext.setCurrentSchema(member.getType());
-//            nextContext.setCurrentSchemaEntryMode(CurrentSchemaEntryMode.UNION_MEMBER);
-//            nextContext.setEnclosingUnionMember(member);
-
             nextContext =
                 context.getNextContext(member.getUnionMemberKey(), member.getUnionMemberKey(), member.getType(),
                                        CurrentSchemaEntryMode.UNION_MEMBER);
@@ -206,11 +188,11 @@ public class DataSchemaRichContextTraverser
   {
     // child schema is a record field
     FIELD, // child schema is key field of map
-  MAP_KEY, // child schema is value field of map
-  MAP_VALUE, // child schema is value field of array
-  ARRAY_VALUE, // child schema is a member of union
-  UNION_MEMBER, // child schema is referred from a typeref schema
-  TYPEREF_REF
+    MAP_KEY, // child schema is value field of map
+    MAP_VALUE, // child schema is value field of array
+    ARRAY_VALUE, // child schema is a member of union
+    UNION_MEMBER, // child schema is referred from a typeref schema
+    TYPEREF_REF
   }
 
   /**

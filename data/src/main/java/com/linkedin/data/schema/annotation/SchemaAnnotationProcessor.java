@@ -106,12 +106,14 @@ public class SchemaAnnotationProcessor
         errorMsgBuilder.append(String.format("Annotation processing encountered errors during resolution in \"%s\" handler. \n",
                                              schemaAnnotationHandler.getAnnotationNamespace()));
         errorMsgBuilder.append(errorMsgs);
-      } else
+      }
+
+      if (handlerTraverseResult.isTraversalSuccessful() || options.forcePopulateDataSchemaToResult())
       {
         DataSchema visitorConstructedSchema = handlerTraverseResult.getConstructedSchema();
         if (visitorConstructedSchema != null)
         {
-          // will store the constructed dataSchema from the visitor in the processResult.
+          // will update the processResult with the constructed dataSchema from the visitor.
           processResult.setResultSchema(visitorConstructedSchema);
         }
       }
@@ -331,6 +333,25 @@ public class SchemaAnnotationProcessor
    */
   public static class AnnotationProcessOption
   {
+    public boolean forcePopulateDataSchemaToResult()
+    {
+      return _forcePopulateDataSchemaToResult;
+    }
+
+    public void setForcePopulateDataSchemaToResult(boolean forcePopulateDataSchemaToResult)
+    {
+      _forcePopulateDataSchemaToResult = forcePopulateDataSchemaToResult;
+    }
+
+    /**
+     * By default, when {@link SchemaAnnotationProcessor} is processing a dataSchema using a handler,
+     * and if there has been errors,
+     * it will not populate the DataSchema processed by current handler to its {@link SchemaAnnotationProcessResult}
+     *
+     * By setting this variable to true, {@link SchemaAnnotationProcessor} will update the {@link SchemaAnnotationProcessResult}
+     * using the dataSchema processed by current handler, even there has been errors.
+     */
+    boolean _forcePopulateDataSchemaToResult = false;
 
   }
 }
