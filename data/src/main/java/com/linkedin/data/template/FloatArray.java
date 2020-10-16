@@ -16,11 +16,16 @@
 
 package com.linkedin.data.template;
 
+import com.linkedin.data.Data;
 import com.linkedin.data.DataList;
+import com.linkedin.data.collections.CheckedUtil;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.ArrayDataSchema;
 import com.linkedin.util.ArgumentUtil;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.List;
 
 
 /**
@@ -28,21 +33,22 @@ import java.util.Collection;
  */
 public final class FloatArray extends DirectArrayTemplate<Float>
 {
+  public static final SpecificDataComplexProvider SPECIFIC_DATA_COMPLEX_PROVIDER = new FloatArraySpecificDataComplexProvider();
   private static final ArrayDataSchema SCHEMA = (ArrayDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"array\", \"items\" : \"float\" }");
 
   public FloatArray()
   {
-    this(new DataList());
+    this(new DataList(new FloatSpecificElementArray()));
   }
 
   public FloatArray(int initialCapacity)
   {
-    this(new DataList(initialCapacity));
+    this(new DataList(new FloatSpecificElementArray(initialCapacity)));
   }
 
   public FloatArray(Collection<Float> c)
   {
-    this(new DataList(c.size()));
+    this(new DataList(new FloatSpecificElementArray(c.size())));
     addAll(c);
   }
 
@@ -53,9 +59,19 @@ public final class FloatArray extends DirectArrayTemplate<Float>
 
   public FloatArray(Float first, Float... rest)
   {
-    this(new DataList(rest.length + 1));
+    this(new DataList(new FloatSpecificElementArray(rest.length + 1)));
     add(first);
     addAll(Arrays.asList(rest));
+  }
+
+  public boolean add(float element) throws ClassCastException
+  {
+    return CheckedUtil.addWithoutChecking(_list, element);
+  }
+
+  public void add(int index, float element) throws ClassCastException
+  {
+    CheckedUtil.addWithoutChecking(_list, index, element);
   }
 
   @Override
@@ -82,5 +98,40 @@ public final class FloatArray extends DirectArrayTemplate<Float>
   {
     assert(object != null);
     return DataTemplateUtil.coerceFloatOutput(object);
+  }
+
+  public static class FloatSpecificElementArray extends SpecificElementArrayTemplate<Float>
+  {
+    public FloatSpecificElementArray()
+    {
+      super(Float.class);
+    }
+
+    public FloatSpecificElementArray(int capacity)
+    {
+      super(capacity, Float.class);
+    }
+
+    @Override
+    protected void specificTraverse(Float object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      callback.floatValue(object);
+    }
+  }
+
+  private static class FloatArraySpecificDataComplexProvider implements SpecificDataComplexProvider
+  {
+    @Override
+    public List<Object> getList()
+    {
+      return new FloatSpecificElementArray();
+    }
+
+    @Override
+    public List<Object> getList(int capacity)
+    {
+      return new FloatSpecificElementArray(capacity);
+    }
   }
 }

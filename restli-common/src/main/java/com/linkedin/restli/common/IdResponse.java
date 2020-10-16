@@ -17,6 +17,7 @@
 package com.linkedin.restli.common;
 
 
+import com.linkedin.data.DataMap;
 import com.linkedin.data.template.RecordTemplate;
 
 
@@ -41,7 +42,7 @@ public class IdResponse<K> extends RecordTemplate
 
   public IdResponse(K key)
   {
-    super(null, null);
+    super((DataMap) null, null);
     _key = key;
   }
 

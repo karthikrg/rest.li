@@ -35,6 +35,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -84,6 +85,7 @@ public class JavaCodeGeneratorBase
   protected final JClass _dataTemplateUtilClass;
   protected final JClass _getModeClass;
   protected final JClass _mapClass;
+  protected final JClass _listClass;
   protected final JClass _objectClass;
   protected final JClass _pathSpecClass;
   protected final JClass _setModeClass;
@@ -113,6 +115,7 @@ public class JavaCodeGeneratorBase
     _dataTemplateUtilClass = getCodeModel().ref(DataTemplateUtil.class);
     _getModeClass = getCodeModel().ref(GetMode.class);
     _mapClass = getCodeModel().ref(Map.class);
+    _listClass = getCodeModel().ref(List.class);
     _objectClass = getCodeModel().ref(Object.class);
     _pathSpecClass = getCodeModel().ref(PathSpec.class);
     _setModeClass = getCodeModel().ref(SetMode.class);

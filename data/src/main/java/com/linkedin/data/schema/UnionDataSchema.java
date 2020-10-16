@@ -71,7 +71,7 @@ public final class UnionDataSchema extends ComplexDataSchema
         errorMessageBuilder.append("\"").append(alias).append("\" is restricted keyword for a member alias.\n");
         ok = false;
       }
-      _alias = alias;
+      _alias = alias.intern();
       _hasError |= !ok;
       return ok;
     }
@@ -383,8 +383,21 @@ public final class UnionDataSchema extends ComplexDataSchema
    */
   public DataSchema getTypeByMemberKey(String memberKey)
   {
+    UnionDataSchema.Member member = getMemberByMemberKey(memberKey);
+    return (member != null ? member.getType() : null);
+  }
+
+  /**
+   * Returns the {@link UnionDataSchema.Member} for a member identified by its member key returned
+   * from {@link Member#getUnionMemberKey()}.
+   *
+   * @param memberKey Union member key of the member.
+   * @return the {@link DataSchema} if type is a member of the union, else return null.
+   */
+  public UnionDataSchema.Member getMemberByMemberKey(String memberKey)
+  {
     Integer index = _memberKeyToIndexMap.get(memberKey);
-    return (index != null ? _members.get(index).getType() : null);
+    return (index != null ? _members.get(index) : null);
   }
 
   /**

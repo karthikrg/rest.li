@@ -18,6 +18,7 @@ package com.linkedin.data.template;
 
 
 import com.linkedin.data.DataComplex;
+import com.linkedin.util.Lazy;
 import java.util.HashMap;
 
 
@@ -36,34 +37,34 @@ import java.util.HashMap;
  */
 class DataObjectToObjectCache<V> implements Cloneable
 {
-  private HashMap<DataObjectKey, V> _cache;
+  private Lazy<HashMap<DataObjectKey, V>> _cache;
 
   DataObjectToObjectCache()
   {
-    _cache = new HashMap<DataObjectKey, V>();
+    _cache = new Lazy<>(HashMap::new);
   }
 
-  DataObjectToObjectCache(int initialCapacity)
+  DataObjectToObjectCache(final int initialCapacity)
   {
-    _cache = new HashMap<DataObjectKey, V>(initialCapacity);
+    _cache = new Lazy<>(() -> new HashMap<>(initialCapacity));
   }
 
   @SuppressWarnings("unchecked")
   public DataObjectToObjectCache<V> clone() throws CloneNotSupportedException
   {
     DataObjectToObjectCache<V> cloned = (DataObjectToObjectCache<V>) super.clone();
-    cloned._cache = (HashMap<DataObjectKey, V>) _cache.clone();
+    cloned._cache = new Lazy<>(() -> (HashMap<DataObjectKey, V>) _cache.get().clone());
     return cloned;
   }
 
   void put(Object dataObject, V value)
   {
-    _cache.put(new DataObjectKey(dataObject), value);
+    _cache.get().put(new DataObjectKey(dataObject), value);
   }
 
   V get(Object dataObject)
   {
-    return _cache.get(new DataObjectKey(dataObject));
+    return _cache.get().get(new DataObjectKey(dataObject));
   }
 
   private class DataObjectKey

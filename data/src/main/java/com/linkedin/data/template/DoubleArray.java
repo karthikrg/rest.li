@@ -16,11 +16,16 @@
 
 package com.linkedin.data.template;
 
+import com.linkedin.data.Data;
 import com.linkedin.data.DataList;
+import com.linkedin.data.collections.CheckedUtil;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.ArrayDataSchema;
 import com.linkedin.util.ArgumentUtil;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.List;
 
 
 /**
@@ -28,21 +33,22 @@ import java.util.Collection;
  */
 public final class DoubleArray extends DirectArrayTemplate<Double>
 {
+  public static final SpecificDataComplexProvider SPECIFIC_DATA_COMPLEX_PROVIDER = new DoubleArraySpecificDataComplexProvider();
   private static final ArrayDataSchema SCHEMA = (ArrayDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"array\", \"items\" : \"double\" }");
 
   public DoubleArray()
   {
-    this(new DataList());
+    this(new DataList(new DoubleSpecificElementArray()));
   }
 
   public DoubleArray(int initialCapacity)
   {
-    this(new DataList(initialCapacity));
+    this(new DataList(new DoubleSpecificElementArray(initialCapacity)));
   }
 
   public DoubleArray(Collection<Double> c)
   {
-    this(new DataList(c.size()));
+    this(new DataList(new DoubleSpecificElementArray(c.size())));
     addAll(c);
   }
 
@@ -53,9 +59,19 @@ public final class DoubleArray extends DirectArrayTemplate<Double>
 
   public DoubleArray(Double first, Double... rest)
   {
-    this(new DataList(rest.length + 1));
+    this(new DataList(new DoubleSpecificElementArray(rest.length + 1)));
     add(first);
     addAll(Arrays.asList(rest));
+  }
+
+  public boolean add(double element) throws ClassCastException
+  {
+    return CheckedUtil.addWithoutChecking(_list, element);
+  }
+
+  public void add(int index, double element) throws ClassCastException
+  {
+    CheckedUtil.addWithoutChecking(_list, index, element);
   }
 
   @Override
@@ -82,5 +98,40 @@ public final class DoubleArray extends DirectArrayTemplate<Double>
   {
     assert(object != null);
     return DataTemplateUtil.coerceDoubleOutput(object);
+  }
+
+  public static class DoubleSpecificElementArray extends SpecificElementArrayTemplate<Double>
+  {
+    public DoubleSpecificElementArray()
+    {
+      super(Double.class);
+    }
+
+    public DoubleSpecificElementArray(int capacity)
+    {
+      super(capacity, Double.class);
+    }
+
+    @Override
+    protected void specificTraverse(Double object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      callback.doubleValue(object);
+    }
+  }
+
+  private static class DoubleArraySpecificDataComplexProvider implements SpecificDataComplexProvider
+  {
+    @Override
+    public List<Object> getList()
+    {
+      return new DoubleSpecificElementArray();
+    }
+
+    @Override
+    public List<Object> getList(int capacity)
+    {
+      return new DoubleSpecificElementArray(capacity);
+    }
   }
 }

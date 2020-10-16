@@ -63,7 +63,7 @@ public class TestResponseMetadata {
       {ResourceMethod.BATCH_GET, new HashMap<>(), true,
           "{statuses={}, results={}, errors={}, $metadata={element={child=value}}}"},
       {ResourceMethod.FINDER,  new CollectionResult<>(Collections.singletonList(buildFooRecord())), true,
-          "{elements=[{text=test Foo}], paging={count=10, start=0, links=[]}, $metadata={element={child=value}}}"},
+          "{elements=[{text=test Foo}], paging={start=0, count=10, links=[]}, $metadata={element={child=value}}}"},
       {ResourceMethod.CREATE, new CreateResponse(1000, HttpStatus.S_200_OK), true, null},
       {ResourceMethod.BATCH_CREATE, new BatchCreateResult<String, UpdateResponse>(Collections.singletonList(
           new CreateResponse(HttpStatus.S_200_OK))), true, "{elements=[{status=200}], $metadata={element={child=value}}}"},
@@ -78,7 +78,7 @@ public class TestResponseMetadata {
       {ResourceMethod.BATCH_DELETE, new BatchUpdateResult<String, UpdateResponse>(new HashMap<>()), true,
           "{results={}, errors={}, $metadata={element={child=value}}}"},
       {ResourceMethod.GET_ALL, new CollectionResult<>(Collections.singletonList(buildFooRecord())), true,
-          "{elements=[{text=test Foo}], paging={count=10, start=0, links=[]}, $metadata={element={child=value}}}"}
+          "{elements=[{text=test Foo}], paging={start=0, count=10, links=[]}, $metadata={element={child=value}}}"}
     };
   }
 

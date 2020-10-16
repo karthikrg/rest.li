@@ -16,9 +16,13 @@
 
 package com.linkedin.data.template;
 
+import com.linkedin.data.Data;
 import com.linkedin.data.DataMap;
+import com.linkedin.data.collections.CheckedUtil;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.MapDataSchema;
 import com.linkedin.util.ArgumentUtil;
+import java.io.IOException;
 import java.util.Map;
 
 
@@ -27,26 +31,27 @@ import java.util.Map;
  */
 public final class FloatMap extends DirectMapTemplate<Float>
 {
+  public static final SpecificDataComplexProvider SPECIFIC_DATA_COMPLEX_PROVIDER = new FloatMapSpecificDataComplexProvider();
   private static final MapDataSchema SCHEMA = (MapDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"map\", \"values\" : \"float\" }");
 
   public FloatMap()
   {
-    this(new DataMap());
+    this(new DataMap(new FloatSpecificValueMap()));
   }
 
   public FloatMap(int initialCapacity)
   {
-    this(new DataMap(initialCapacity));
+    this(new DataMap(new FloatSpecificValueMap(initialCapacity)));
   }
 
   public FloatMap(int initialCapacity, float loadFactor)
   {
-    this(new DataMap(initialCapacity, loadFactor));
+    this(new DataMap(new FloatSpecificValueMap(initialCapacity, loadFactor)));
   }
 
   public FloatMap(Map<String, Float> m)
   {
-    this(newDataMapOfSize(m.size()));
+    this(capacityFromSize(m.size()));
     putAll(m);
   }
 
@@ -59,6 +64,11 @@ public final class FloatMap extends DirectMapTemplate<Float>
   public FloatMap clone() throws CloneNotSupportedException
   {
     return (FloatMap) super.clone();
+  }
+
+  public void put(String key, float value)
+  {
+    CheckedUtil.putWithoutChecking(_map, key, value);
   }
 
   @Override
@@ -78,5 +88,45 @@ public final class FloatMap extends DirectMapTemplate<Float>
   protected Float coerceOutput(Object object) throws TemplateOutputCastException
   {
     return DataTemplateUtil.coerceFloatOutput(object);
+  }
+
+  public static class FloatSpecificValueMap extends SpecificValueMapTemplate<Float>
+  {
+    public FloatSpecificValueMap()
+    {
+      super(Float.class);
+    }
+
+    public FloatSpecificValueMap(int capacity)
+    {
+      super(capacity, Float.class);
+    }
+
+    public FloatSpecificValueMap(int capacity, float loadFactor)
+    {
+      super(capacity, loadFactor, Float.class);
+    }
+
+    @Override
+    protected void specificTraverse(Float object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      callback.floatValue(object);
+    }
+  }
+
+  private static class FloatMapSpecificDataComplexProvider implements SpecificDataComplexProvider
+  {
+    @Override
+    public Map<String, Object> getMap()
+    {
+      return new FloatSpecificValueMap();
+    }
+
+    @Override
+    public Map<String, Object> getMap(int capacity)
+    {
+      return new FloatSpecificValueMap(capacity);
+    }
   }
 }

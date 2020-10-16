@@ -111,7 +111,7 @@ public final class RecordDataSchema extends NamedDataSchema
         errorMessageBuilder.append("\"").append(name).append("\" is an invalid field name.\n");
         ok = false;
       }
-      _name = name;
+      _name = name.intern();
       _hasError |= !ok;
       return ok;
     }

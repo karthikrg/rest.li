@@ -39,6 +39,7 @@ import java.io.InputStream;
 import java.io.Reader;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -970,8 +971,8 @@ abstract public class AbstractSchemaParser implements PegasusSchemaParser
    */
   private String _currentPackage = "";
 
-  private final Map<Object, DataLocation> _dataLocationMap = new IdentityHashMap<Object, DataLocation>();
-  private final List<DataSchema> _topLevelDataSchemas = new ArrayList<DataSchema>();
+  private final Map<Object, DataLocation> _dataLocationMap = new HashMap<>();
+  private final List<DataSchema> _topLevelDataSchemas = new ArrayList<>();
   private final DataSchemaResolver _resolver;
 
   public static final ValidationOptions getDefaultSchemaParserValidationOptions()

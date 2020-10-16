@@ -20,6 +20,7 @@ package com.linkedin.data.codec;
 import com.linkedin.data.ByteString;
 import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.util.FastByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.IOException;
@@ -146,6 +147,20 @@ public interface DataCodec
    */
   default DataMap readMap(ByteString in) throws IOException
   {
+    return readMap(in, SpecificDataComplexProvider.DEFAULT);
+  }
+
+  /**
+   * Returns a {@link DataMap} from data consumed from the given {@link ByteString}.
+   *
+   * @param in the {@link ByteString} from which to read.
+   * @param provider the {@link SpecificDataComplexProvider} to instantiate {@link DataMap} and {@link DataList}.
+   *
+   * @return a {@link DataMap} representation of read from the {@link ByteString}.
+   * @throws IOException if there is an error during de-serialization.
+   */
+  default DataMap readMap(ByteString in, SpecificDataComplexProvider provider) throws IOException
+  {
     return readMap(in.asInputStream());
   }
 
@@ -157,6 +172,20 @@ public interface DataCodec
    * @throws IOException if there is an error during de-serialization.
    */
   default DataList readList(ByteString in) throws IOException
+  {
+    return readList(in, SpecificDataComplexProvider.DEFAULT);
+  }
+
+  /**
+   * Returns a {@link DataList} from data consumed from the given {@link ByteString}.
+   *
+   * @param in the {@link ByteString} from which to read.
+   * @param provider the {@link SpecificDataComplexProvider} to instantiate {@link DataMap} and {@link DataList}.
+   *
+   * @return a {@link DataList} representation of read from the {@link ByteString}.
+   * @throws IOException if there is an error during de-serialization.
+   */
+  default DataList readList(ByteString in, SpecificDataComplexProvider provider) throws IOException
   {
     return readList(in.asInputStream());
   }

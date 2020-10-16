@@ -20,6 +20,7 @@ import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.ListIterator;
 import java.util.function.Consumer;
 
 
@@ -52,7 +53,7 @@ public class CheckedList<E> extends AbstractList<E> implements CommonList<E>, Cl
   public CheckedList()
   {
     _checker = null;
-    _list = new InternalList<E>();
+    _list = new ArrayList<>();
   }
 
   /**
@@ -64,7 +65,7 @@ public class CheckedList<E> extends AbstractList<E> implements CommonList<E>, Cl
   {
     _checker = null;
     checkAll(list);
-    _list = new InternalList<E>(list);
+    _list = new ArrayList<>(list);
   }
 
   /**
@@ -75,7 +76,7 @@ public class CheckedList<E> extends AbstractList<E> implements CommonList<E>, Cl
   public CheckedList(int initialCapacity)
   {
     _checker = null;
-    _list = new InternalList<E>(initialCapacity);
+    _list = new ArrayList<>(initialCapacity);
   }
 
   /**
@@ -86,7 +87,7 @@ public class CheckedList<E> extends AbstractList<E> implements CommonList<E>, Cl
   public CheckedList(ListChecker<E> checker)
   {
     _checker = checker;
-    _list = new InternalList<E>();
+    _list = new ArrayList<>();
   }
 
   /**
@@ -100,7 +101,7 @@ public class CheckedList<E> extends AbstractList<E> implements CommonList<E>, Cl
   {
     _checker = checker;
     checkAll(list);
-    _list = new InternalList<E>(list);
+    _list = new ArrayList<>(list);
   }
 
   /**
@@ -113,7 +114,16 @@ public class CheckedList<E> extends AbstractList<E> implements CommonList<E>, Cl
   public CheckedList(int initialCapacity, ListChecker<E> checker)
   {
     _checker = checker;
-    _list = new InternalList<E>(initialCapacity);
+    _list = new ArrayList<>(initialCapacity);
+  }
+
+  /**
+   * Construct a map backed by the given specific map without copying.
+   */
+  protected CheckedList(List<E> list, ListChecker<E> checker, boolean noCopyPlaceholder)
+  {
+    _checker = checker;
+    _list = list;
   }
 
   @Override
@@ -160,9 +170,22 @@ public class CheckedList<E> extends AbstractList<E> implements CommonList<E>, Cl
   public CheckedList<E> clone() throws CloneNotSupportedException
   {
     CheckedList<E> o = (CheckedList<E>) super.clone();
-    o._list = (InternalList<E>) _list.clone();
+    o._list = cloneList(_list);
     o._readOnly = false;
     return o;
+  }
+
+  @SuppressWarnings("unchecked")
+  protected List<E> cloneList(List<E> input) throws CloneNotSupportedException
+  {
+    if (input instanceof ArrayList)
+    {
+      return (ArrayList<E>)((ArrayList<E>) input).clone();
+    }
+    else
+    {
+      throw new CloneNotSupportedException();
+    }
   }
 
   @Override
@@ -245,7 +268,12 @@ public class CheckedList<E> extends AbstractList<E> implements CommonList<E>, Cl
   public void removeRange(int fromIndex, int toIndex)
   {
     checkMutability();
-    _list.removeRange(fromIndex, toIndex);
+    ListIterator<E> it = _list.listIterator(fromIndex);
+    for (int i = 0, n = toIndex - fromIndex; i < n; i++)
+    {
+      it.next();
+      it.remove();
+    }
   }
 
   @Override
@@ -418,28 +446,7 @@ public class CheckedList<E> extends AbstractList<E> implements CommonList<E>, Cl
     return _list;
   }
 
-  @SuppressWarnings("serial")
-  private static class InternalList<E> extends ArrayList<E>
-  {
-    public InternalList()
-    {
-    }
-    public InternalList(List<? extends E> l)
-    {
-      super(l);
-    }
-    public InternalList(int initialCapacity)
-    {
-      super(initialCapacity);
-    }
-    @Override
-    public void removeRange(int fromIndex, int toIndex)
-    {
-      super.removeRange(fromIndex, toIndex);
-    }
-  }
-
   protected ListChecker<E> _checker;
   private boolean _readOnly = false;
-  private InternalList<E> _list;
+  protected List<E> _list;
 }

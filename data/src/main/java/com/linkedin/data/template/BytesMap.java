@@ -17,9 +17,12 @@
 package com.linkedin.data.template;
 
 import com.linkedin.data.ByteString;
+import com.linkedin.data.Data;
 import com.linkedin.data.DataMap;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.MapDataSchema;
 import com.linkedin.util.ArgumentUtil;
+import java.io.IOException;
 import java.util.Map;
 
 
@@ -28,26 +31,27 @@ import java.util.Map;
  */
 public final class BytesMap extends DirectMapTemplate<ByteString>
 {
+  public static final SpecificDataComplexProvider SPECIFIC_DATA_COMPLEX_PROVIDER = new BytesMapSpecificDataComplexProvider();
   private static final MapDataSchema SCHEMA = (MapDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"map\", \"values\" : \"bytes\" }");
 
   public BytesMap()
   {
-    this(new DataMap());
+    this(new DataMap(new ByteStringSpecificValueMap()));
   }
 
   public BytesMap(int initialCapacity)
   {
-    this(new DataMap(initialCapacity));
+    this(new DataMap(new ByteStringSpecificValueMap(initialCapacity)));
   }
 
   public BytesMap(int initialCapacity, float loadFactor)
   {
-    this(new DataMap(initialCapacity, loadFactor));
+    this(new DataMap(new ByteStringSpecificValueMap(initialCapacity, loadFactor)));
   }
 
   public BytesMap(Map<String, ByteString> m)
   {
-    this(newDataMapOfSize(m.size()));
+    this(capacityFromSize(m.size()));
     putAll(m);
   }
 
@@ -79,5 +83,45 @@ public final class BytesMap extends DirectMapTemplate<ByteString>
   protected ByteString coerceOutput(Object object) throws TemplateOutputCastException
   {
     return DataTemplateUtil.coerceBytesOutput(object);
+  }
+
+  public static class ByteStringSpecificValueMap extends SpecificValueMapTemplate<ByteString>
+  {
+    public ByteStringSpecificValueMap()
+    {
+      super(ByteString.class);
+    }
+
+    public ByteStringSpecificValueMap(int capacity)
+    {
+      super(capacity, ByteString.class);
+    }
+
+    public ByteStringSpecificValueMap(int capacity, float loadFactor)
+    {
+      super(capacity, loadFactor, ByteString.class);
+    }
+
+    @Override
+    protected void specificTraverse(ByteString object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      callback.byteStringValue(object);
+    }
+  }
+
+  private static class BytesMapSpecificDataComplexProvider implements SpecificDataComplexProvider
+  {
+    @Override
+    public Map<String, Object> getMap()
+    {
+      return new ByteStringSpecificValueMap();
+    }
+
+    @Override
+    public Map<String, Object> getMap(int capacity)
+    {
+      return new ByteStringSpecificValueMap(capacity);
+    }
   }
 }

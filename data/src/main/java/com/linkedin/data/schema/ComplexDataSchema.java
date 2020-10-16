@@ -16,6 +16,7 @@
 
 package com.linkedin.data.schema;
 
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import java.util.Collections;
 import java.util.Map;
 
@@ -53,7 +54,6 @@ public abstract class ComplexDataSchema extends DataSchema
   {
     return _properties;
   }
-
 
   @Override
   public boolean equals(Object object)

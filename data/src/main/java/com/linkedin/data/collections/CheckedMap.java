@@ -18,7 +18,6 @@ package com.linkedin.data.collections;
 
 import com.linkedin.data.Data;
 import java.lang.ref.WeakReference;
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
@@ -72,7 +71,6 @@ public class CheckedMap<K,V> implements CommonMap<K,V>, Cloneable
   public CheckedMap(Map<? extends K,? extends V> map)
   {
     _checker = null;
-    checkAll(map);
     _map = new HashMap<>(map);
   }
 
@@ -160,12 +158,21 @@ public class CheckedMap<K,V> implements CommonMap<K,V>, Cloneable
     _map = new HashMap<>(initialCapacity, loadFactor);
   }
 
+  /**
+   * Construct a map backed by the given specific map without copying.
+   */
+  protected CheckedMap(Map<K, V> map, MapChecker<K, V> checker, boolean noCopyPlaceholder)
+  {
+    _checker = checker;
+    _map = map;
+  }
+
   @Override
   public void clear()
   {
     checkMutability();
     Set<K> keys = null;
-    if (_changeListeners != null)
+    if (_firstChangeListener != null)
     {
       keys = new HashSet<>(keySet());
     }
@@ -181,10 +188,24 @@ public class CheckedMap<K,V> implements CommonMap<K,V>, Cloneable
   public CheckedMap<K,V> clone() throws CloneNotSupportedException
   {
     CheckedMap<K,V> o = (CheckedMap<K,V>) super.clone();
-    o._map = (HashMap<K,V>) _map.clone();
+    o._map = cloneMap(_map);
     o._readOnly = false;
-    o._changeListeners = null;
+    o._firstChangeListener = null;
+    o._otherChangeListeners = null;
     return o;
+  }
+
+  @SuppressWarnings("unchecked")
+  protected Map<K, V> cloneMap(Map<K, V> input) throws CloneNotSupportedException
+  {
+    if (input instanceof HashMap)
+    {
+      return (Map<K,V>) ((HashMap) input).clone();
+    }
+    else
+    {
+      throw new CloneNotSupportedException();
+    }
   }
 
   @Override
@@ -343,16 +364,28 @@ public class CheckedMap<K,V> implements CommonMap<K,V>, Cloneable
    */
   public final void addChangeListener(ChangeListener<K, V> listener)
   {
-    if (_changeListeners == null)
+    // Maintain a weak reference to to the listener to avoid leaking the wrapper beyond its
+    // lifetime.
+    WeakReference<ChangeListener<K, V>> listenerReference = new WeakReference<>(listener);
+
+    //
+    // Most cases will use just one change listener, so set that first if unset. Else initialize a list
+    // of other change listeners, and add the listener to that list.
+    //
+    if (_firstChangeListener == null)
+    {
+      _firstChangeListener = listenerReference;
+      return;
+    }
+
+    if (_otherChangeListeners == null)
     {
       // Change listeners are mostly used by map wrappers, and we always iterate through them
       // linearly, so use a linked list.
-      _changeListeners = new LinkedList<>();
+      _otherChangeListeners = new LinkedList<>();
     }
 
-    // Maintain a weak reference to to the listener to avoid leaking the wrapper beyond its
-    // lifetime.
-    _changeListeners.add(new WeakReference<>(listener));
+    _otherChangeListeners.add(listenerReference);
   }
 
   final private void checkKeyValue(K key, V value)
@@ -367,10 +400,10 @@ public class CheckedMap<K,V> implements CommonMap<K,V>, Cloneable
   {
     if (_checker != null)
     {
-      for (Map.Entry<? extends K, ? extends V> e : m.entrySet())
+      m.forEach((key, value) ->
       {
-        _checker.checkKeyValue(this, e.getKey(), e.getValue());
-      }
+        _checker.checkKeyValue(this, key, value);
+      });
     }
   }
 
@@ -473,50 +506,77 @@ public class CheckedMap<K,V> implements CommonMap<K,V>, Cloneable
 
   private void notifyChangeListenersOnPut(K key, V value)
   {
-    if (_changeListeners == null)
+    if (_firstChangeListener == null)
     {
       return;
     }
 
-    _changeListeners.forEach(listenerRef -> {
-      ChangeListener<K, V> listener = listenerRef.get();
-      if (listener != null)
-      {
-        listener.onUnderlyingMapChanged(key, value);
-      }
-    });
+    ChangeListener<K, V> firstListener = _firstChangeListener.get();
+    if (firstListener != null)
+    {
+      firstListener.onUnderlyingMapChanged(key, value);
+    }
+
+    if (_otherChangeListeners != null)
+    {
+      _otherChangeListeners.forEach(listenerRef -> {
+        ChangeListener<K, V> listener = listenerRef.get();
+        if (listener != null)
+        {
+          listener.onUnderlyingMapChanged(key, value);
+        }
+      });
+    }
   }
 
   private void notifyChangeListenersOnPutAll(Map<? extends K, ? extends V> map)
   {
-    if (_changeListeners == null)
+    if (_firstChangeListener == null)
     {
       return;
     }
 
-    _changeListeners.forEach(listenerRef -> {
-      ChangeListener<K, V> listener = listenerRef.get();
-      if (listener != null)
-      {
-        map.forEach(listener::onUnderlyingMapChanged);
-      }
-    });
+    ChangeListener<K, V> firstListener = _firstChangeListener.get();
+    if (firstListener != null)
+    {
+      map.forEach(firstListener::onUnderlyingMapChanged);
+    }
+
+    if (_otherChangeListeners != null)
+    {
+      _otherChangeListeners.forEach(listenerRef -> {
+        ChangeListener<K, V> listener = listenerRef.get();
+        if (listener != null)
+        {
+          map.forEach(listener::onUnderlyingMapChanged);
+        }
+      });
+    }
   }
 
   private void notifyChangeListenersOnClear(Set<? extends K> keys)
   {
-    if (_changeListeners == null)
+    if (_firstChangeListener == null)
     {
       return;
     }
 
-    _changeListeners.forEach(listenerRef -> {
-      ChangeListener<K, V> listener = listenerRef.get();
-      if (listener != null)
-      {
-        keys.forEach(key -> listener.onUnderlyingMapChanged(key, null));
-      }
-    });
+    ChangeListener<K, V> firstListener = _firstChangeListener.get();
+    if (firstListener != null)
+    {
+      keys.forEach(key -> firstListener.onUnderlyingMapChanged(key, null));
+    }
+
+    if (_otherChangeListeners != null)
+    {
+      _otherChangeListeners.forEach(listenerRef -> {
+        ChangeListener<K, V> listener = listenerRef.get();
+        if (listener != null)
+        {
+          keys.forEach(key -> listener.onUnderlyingMapChanged(key, null));
+        }
+      });
+    }
   }
 
   /**
@@ -535,6 +595,7 @@ public class CheckedMap<K,V> implements CommonMap<K,V>, Cloneable
 
   private boolean _readOnly = false;
   protected MapChecker<K,V> _checker;
-  private HashMap<K,V> _map;
-  private List<WeakReference<ChangeListener<K, V>>> _changeListeners;
+  protected Map<K,V> _map;
+  private WeakReference<ChangeListener<K, V>> _firstChangeListener;
+  private List<WeakReference<ChangeListener<K, V>>> _otherChangeListeners;
 }

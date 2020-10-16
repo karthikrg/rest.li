@@ -19,8 +19,13 @@ package com.linkedin.data;
 import com.linkedin.data.collections.CheckedList;
 import com.linkedin.data.collections.CommonList;
 import com.linkedin.data.collections.ListChecker;
+import com.linkedin.data.collections.SpecificList;
+import com.linkedin.data.collections.SpecificMap;
+import com.linkedin.util.Lazy;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -82,6 +87,36 @@ public final class DataList extends CheckedList<Object> implements DataComplex
     super(initialCapacity, _checker);
   }
 
+  /**
+   * Constructs a {@link DataList} backed by the given specific list.
+   *
+   * <p>This constructor is meant to be invoked only from code-generated models.</p>
+   *
+   * @param specificList provides the specific list.
+   *
+   * @see HashMap
+   */
+  public DataList(SpecificList specificList)
+  {
+    super(specificList, _checker, false);
+    _encapsulatesSpecificList = true;
+  }
+
+  /**
+   * Constructs a {@link DataList} backed by the given specific list.
+   *
+   * <p>This constructor is meant to be invoked only from code-generated models.</p>
+   *
+   * @param list provides the specific list.
+   *
+   * @see HashMap
+   */
+  public DataList(List<Object> list, boolean noCopyPlaceholder)
+  {
+    super(list, _checker, noCopyPlaceholder);
+    _encapsulatesSpecificList = (list instanceof SpecificList);
+  }
+
   @Override
   public Object get(int index)
   {
@@ -94,12 +129,25 @@ public final class DataList extends CheckedList<Object> implements DataComplex
   {
     DataList o = (DataList) super.clone();
     o._madeReadOnly = false;
+    o._encapsulatesSpecificList = _encapsulatesSpecificList;
     o._instrumented = false;
     o._accessList = null;
     o._dataComplexHashCode = 0;
-    o._isTraversing = new ThreadLocal<>();
+    o._isTraversing = null;
 
     return o;
+  }
+
+  protected List<Object> cloneList(List<Object> input) throws CloneNotSupportedException
+  {
+    if (input instanceof SpecificList)
+    {
+      return (SpecificList)((SpecificList) input).clone();
+    }
+    else
+    {
+      return super.cloneList(input);
+    }
   }
 
   @Override
@@ -239,6 +287,67 @@ public final class DataList extends CheckedList<Object> implements DataComplex
     return _dataComplexHashCode;
   }
 
+  public void traverse(Data.TraverseCallback callback, Data.CycleChecker cycleChecker) throws IOException
+  {
+    if (isEmpty())
+    {
+      callback.emptyList();
+    }
+    else
+    {
+      try
+      {
+        cycleChecker.startList(this);
+        callback.startList(this);
+
+        // Use Java 8 forEach to minimize intermediary object creation for better performance.
+        try
+        {
+          //
+          // If this is backed by a specific list, delegate traversal to the specific list. Else, use Java 8 forEach
+          // to avoid intermediary object creation.
+          //
+          if (_encapsulatesSpecificList)
+          {
+            ((SpecificList) _list).traverse(callback, cycleChecker);
+          }
+          else {
+            final int[] index = {0};
+            forEach((element) ->
+            {
+              try
+              {
+                callback.index(index[0]);
+                Data.traverse(element, callback, cycleChecker);
+                index[0]++;
+              }
+              catch (IOException e)
+              {
+                throw new IllegalStateException(e);
+              }
+            });
+          }
+        }
+        catch (IllegalStateException e)
+        {
+          if (e.getCause() instanceof IOException)
+          {
+            throw (IOException) e.getCause();
+          }
+          else
+          {
+            throw new IOException(e);
+          }
+        }
+        callback.endList();
+      }
+      finally
+      {
+        cycleChecker.endList(this);
+      }
+    }
+  }
+
   // Unit test use only
   void disableChecker()
   {
@@ -273,16 +382,43 @@ public final class DataList extends CheckedList<Object> implements DataComplex
 
   private final static ListChecker<Object> _checker = (list, e) -> Data.checkAllowed((DataComplex) list, e);
 
+  Object isTraversing()
+  {
+    return getOrCreateIsTraversing().get();
+  }
+
+  void setTraversing(Object value)
+  {
+    getOrCreateIsTraversing().set(value);
+  }
+
+  private ThreadLocal<Object> getOrCreateIsTraversing()
+  {
+    if (_isTraversing == null)
+    {
+      synchronized (this)
+      {
+        if (_isTraversing == null)
+        {
+          _isTraversing = new ThreadLocal<>();
+        }
+      }
+    }
+
+    return _isTraversing;
+  }
+
   /**
    * Indicates if this {@link DataList} is currently being traversed by a {@link Data.TraverseCallback} if this value is
    * not null, or not if this value is null. This is internally marked package private, used for cycle detection and
    * not meant for use by external callers. This is maintained as a {@link ThreadLocal} to allow for concurrent
    * traversals of the same {@link DataList} from multiple threads.
    */
-  ThreadLocal<Object> _isTraversing = new ThreadLocal<>();
+  private ThreadLocal<Object> _isTraversing;
 
   private boolean _madeReadOnly = false;
   private boolean _instrumented = false;
   private ArrayList<Integer> _accessList;
+  private boolean _encapsulatesSpecificList = false;
   private int _dataComplexHashCode = 0;
 }

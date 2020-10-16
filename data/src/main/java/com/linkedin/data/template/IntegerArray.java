@@ -16,10 +16,16 @@
 
 package com.linkedin.data.template;
 
+import com.linkedin.data.Data;
 import com.linkedin.data.DataList;
+import com.linkedin.data.collections.CheckedUtil;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.ArrayDataSchema;
 import com.linkedin.util.ArgumentUtil;
+import java.io.IOException;
+import java.util.Arrays;
 import java.util.Collection;
+import java.util.List;
 
 
 /**
@@ -27,27 +33,45 @@ import java.util.Collection;
  */
 public final class IntegerArray extends DirectArrayTemplate<Integer>
 {
+  public static final SpecificDataComplexProvider SPECIFIC_DATA_COMPLEX_PROVIDER = new IntegerArraySpecificDataComplexProvider();
   private static final ArrayDataSchema SCHEMA = (ArrayDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"array\", \"items\" : \"int\" }");
 
   public IntegerArray()
   {
-    this(new DataList());
+    this(new DataList(new IntegerSpecificElementArray()));
   }
 
   public IntegerArray(int initialCapacity)
   {
-    this(new DataList(initialCapacity));
+    this(new DataList(new IntegerSpecificElementArray(initialCapacity)));
   }
 
   public IntegerArray(Collection<Integer> c)
   {
-    this(new DataList(c.size()));
+    this(new DataList(new IntegerSpecificElementArray(c.size())));
     addAll(c);
   }
 
   public IntegerArray(DataList list)
   {
     super(list, SCHEMA, Integer.class, Integer.class);
+  }
+
+  public IntegerArray(Integer first, Integer... rest)
+  {
+    this(new DataList(new IntegerSpecificElementArray(rest.length + 1)));
+    add(first);
+    addAll(Arrays.asList(rest));
+  }
+
+  public boolean add(int element) throws ClassCastException
+  {
+    return CheckedUtil.addWithoutChecking(_list, element);
+  }
+
+  public void add(int index, int element) throws ClassCastException
+  {
+    CheckedUtil.addWithoutChecking(_list, index, element);
   }
 
   @Override
@@ -74,6 +98,41 @@ public final class IntegerArray extends DirectArrayTemplate<Integer>
   {
     assert(object != null);
     return DataTemplateUtil.coerceIntOutput(object);
+  }
+
+  public static class IntegerSpecificElementArray extends SpecificElementArrayTemplate<Integer>
+  {
+    public IntegerSpecificElementArray()
+    {
+      super(Integer.class);
+    }
+
+    public IntegerSpecificElementArray(int capacity)
+    {
+      super(capacity, Integer.class);
+    }
+
+    @Override
+    protected void specificTraverse(Integer object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      callback.integerValue(object);
+    }
+  }
+
+  private static class IntegerArraySpecificDataComplexProvider implements SpecificDataComplexProvider
+  {
+    @Override
+    public List<Object> getList()
+    {
+      return new IntegerSpecificElementArray();
+    }
+
+    @Override
+    public List<Object> getList(int capacity)
+    {
+      return new IntegerSpecificElementArray(capacity);
+    }
   }
 }
 

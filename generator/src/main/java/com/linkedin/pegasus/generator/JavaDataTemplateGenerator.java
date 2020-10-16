@@ -16,11 +16,12 @@
 
 package com.linkedin.pegasus.generator;
 
-
 import com.linkedin.data.ByteString;
+import com.linkedin.data.Data;
 import com.linkedin.data.DataMap;
-import com.linkedin.data.DataMapBuilder;
 import com.linkedin.data.collections.CheckedMap;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
+import com.linkedin.data.collections.SpecificDataTemplateSchemaMap;
 import com.linkedin.data.schema.ArrayDataSchema;
 import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.DataSchemaConstants;
@@ -33,6 +34,7 @@ import com.linkedin.data.schema.RecordDataSchema;
 import com.linkedin.data.schema.SchemaFormatType;
 import com.linkedin.data.schema.SchemaToJsonEncoder;
 import com.linkedin.data.schema.SchemaToPdlEncoder;
+import com.linkedin.data.schema.UnionDataSchema;
 import com.linkedin.data.template.BooleanArray;
 import com.linkedin.data.template.BooleanMap;
 import com.linkedin.data.template.BytesArray;
@@ -70,40 +72,41 @@ import com.linkedin.pegasus.generator.spec.PrimitiveTemplateSpec;
 import com.linkedin.pegasus.generator.spec.RecordTemplateSpec;
 import com.linkedin.pegasus.generator.spec.TyperefTemplateSpec;
 import com.linkedin.pegasus.generator.spec.UnionTemplateSpec;
-
 import com.linkedin.util.ArgumentUtil;
+import com.sun.codemodel.ClassType;
+import com.sun.codemodel.JAnnotatable;
+import com.sun.codemodel.JBlock;
 import com.sun.codemodel.JCase;
+import com.sun.codemodel.JClass;
+import com.sun.codemodel.JClassAlreadyExistsException;
+import com.sun.codemodel.JClassContainer;
+import com.sun.codemodel.JCommentPart;
 import com.sun.codemodel.JConditional;
+import com.sun.codemodel.JDefinedClass;
+import com.sun.codemodel.JDocCommentable;
+import com.sun.codemodel.JEnumConstant;
+import com.sun.codemodel.JExpr;
+import com.sun.codemodel.JExpression;
 import com.sun.codemodel.JFieldRef;
+import com.sun.codemodel.JFieldVar;
+import com.sun.codemodel.JInvocation;
+import com.sun.codemodel.JMethod;
+import com.sun.codemodel.JMod;
 import com.sun.codemodel.JOp;
 import com.sun.codemodel.JSwitch;
+import com.sun.codemodel.JType;
+import com.sun.codemodel.JVar;
+import java.io.IOException;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-
+import java.util.function.BiConsumer;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
-
-import com.sun.codemodel.ClassType;
-import com.sun.codemodel.JAnnotatable;
-import com.sun.codemodel.JBlock;
-import com.sun.codemodel.JClass;
-import com.sun.codemodel.JClassAlreadyExistsException;
-import com.sun.codemodel.JClassContainer;
-import com.sun.codemodel.JCommentPart;
-import com.sun.codemodel.JDefinedClass;
-import com.sun.codemodel.JDocCommentable;
-import com.sun.codemodel.JEnumConstant;
-import com.sun.codemodel.JExpr;
-import com.sun.codemodel.JExpression;
-import com.sun.codemodel.JFieldVar;
-import com.sun.codemodel.JInvocation;
-import com.sun.codemodel.JMethod;
-import com.sun.codemodel.JMod;
-import com.sun.codemodel.JVar;
+import org.apache.commons.lang3.StringUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -293,11 +296,12 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     return inv;
   }
 
-  private static void generateCopierMethods(JDefinedClass templateClass, Map<String, JVar> fields, JClass changeListenerClass)
+  private void generateCopierMethods(JDefinedClass templateClass, Map<String, JVar> fields,
+      Map<String, JVar> hasFields, JClass changeListenerClass, JVar specificMapVar)
   {
     // Clone is a shallow copy and shouldn't reset fields, copy is a deep copy and should.
-    overrideCopierMethod(templateClass, "clone", fields, false, changeListenerClass);
-    overrideCopierMethod(templateClass, "copy", fields, true, changeListenerClass);
+    overrideCopierMethod(templateClass, "clone", fields, hasFields, false, changeListenerClass, specificMapVar);
+    overrideCopierMethod(templateClass, "copy", fields, hasFields, true, changeListenerClass, specificMapVar);
   }
 
   private static boolean hasNestedFields(DataSchema schema)
@@ -327,32 +331,55 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     return schema.getDereferencedType() == DataSchema.Type.ARRAY;
   }
 
-  private static void generateConstructorWithNoArg(JDefinedClass cls, JClass newClass)
+  private static void generateDataComplexConstructor(JDefinedClass cls,
+      JClass dataComplexClass,
+      JClass specificValueCollectionClass)
   {
-    final JMethod noArgConstructor = cls.constructor(JMod.PUBLIC);
-    noArgConstructor.body().invoke(THIS).arg(JExpr._new(newClass));
+    final JMethod constructor = cls.constructor(JMod.PUBLIC);
+    constructor.body().invoke(THIS).arg(JExpr._new(dataComplexClass).arg(JExpr._new(specificValueCollectionClass)));
   }
 
-  private static void generateConstructorWithObjectArg(JDefinedClass cls, JVar schemaField, JVar changeListenerVar)
+  private static void generateConstructorWithObjectArg(JDefinedClass cls, JVar schemaField, JVar changeListenerVar, JVar specificMapVar)
   {
     final JMethod argConstructor = cls.constructor(JMod.PUBLIC);
     final JVar param = argConstructor.param(Object.class, "data");
     argConstructor.body().invoke(SUPER).arg(param).arg(schemaField);
+    JBlock changeListenerBody = argConstructor.body();
+
+    if (specificMapVar != null)
+    {
+      argConstructor.body().assign(specificMapVar,
+          JOp.cond(JExpr.ref("_specificMap")._instanceof(specificMapVar.type()),
+              JExpr.cast(specificMapVar.type(), JExpr.ref("_specificMap")), JExpr._null()));
+      changeListenerBody = argConstructor.body()._if(specificMapVar.eq(JExpr._null()))._then();
+    }
+
     if (changeListenerVar != null)
     {
-      addChangeListenerRegistration(argConstructor, changeListenerVar);
+      changeListenerBody.assign(changeListenerVar, JExpr._new(changeListenerVar.type()).arg(JExpr._this()));
+      addChangeListenerRegistration(changeListenerBody, changeListenerVar);
     }
   }
 
-  private static void generateConstructorWithArg(JDefinedClass cls, JVar schemaField, JClass paramClass, JVar changeListenerVar)
+  private static void generateConstructorWithArg(JDefinedClass cls, JVar schemaField, JClass paramClass, JVar changeListenerVar, JVar specificMapVar)
   {
     final JMethod argConstructor = cls.constructor(JMod.PUBLIC);
     final JVar param = argConstructor.param(paramClass, "data");
     argConstructor.body().invoke(SUPER).arg(param).arg(schemaField);
+    JBlock changeListenerBody = argConstructor.body();
+
+    if (specificMapVar != null)
+    {
+      argConstructor.body().assign(specificMapVar,
+          JOp.cond(JExpr.ref("_specificMap")._instanceof(specificMapVar.type()),
+              JExpr.cast(specificMapVar.type(), JExpr.ref("_specificMap")), JExpr._null()));
+      changeListenerBody = argConstructor.body()._if(specificMapVar.eq(JExpr._null()))._then();
+    }
 
     if (changeListenerVar != null)
     {
-      addChangeListenerRegistration(argConstructor, changeListenerVar);
+      changeListenerBody.assign(changeListenerVar, JExpr._new(changeListenerVar.type()).arg(JExpr._this()));
+      addChangeListenerRegistration(changeListenerBody, changeListenerVar);
     }
   }
 
@@ -364,9 +391,9 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     dataClassArg(inv, dataClass);
   }
 
-  private static void addChangeListenerRegistration(JMethod constructor, JVar changeListenerVar)
+  private static void addChangeListenerRegistration(JBlock body, JVar changeListenerVar)
   {
-    constructor.body().invoke("addChangeListener").arg(changeListenerVar);
+    body.invoke("addChangeListener").arg(changeListenerVar);
   }
 
   /**
@@ -394,9 +421,8 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     return customInfo != null ? customInfo.getCustomSchema() : schema.getDereferencedDataSchema();
   }
 
-  private static void overrideCopierMethod(JDefinedClass templateClass, String methodName, Map<String, JVar> fields,
-      boolean resetFields,
-      JClass changeListenerClass)
+  private void overrideCopierMethod(JDefinedClass templateClass, String methodName, Map<String, JVar> fields,
+      Map<String, JVar> hasFields, boolean resetFields, JClass changeListenerClass, JVar specificMapVar)
   {
     final JMethod copierMethod = templateClass.method(JMod.PUBLIC, templateClass, methodName);
     copierMethod.annotate(Override.class);
@@ -407,13 +433,31 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     {
       if (resetFields)
       {
-        fields.values().forEach(var -> {
-          copierMethod.body().assign(copyVar.ref(var), JExpr._null());
+        fields.forEach((key, var) -> {
+          JVar hasVar =  hasFields.get(key);
+          if (hasVar != null)
+          {
+            copierMethod.body().assign(copyVar.ref(hasVar), JExpr.lit(false));
+            copierMethod.body().assign(copyVar.ref(var), getDefaultPrimitiveExpression(var.type()));
+          }
+          else
+          {
+            copierMethod.body().assign(copyVar.ref(var), JExpr._null());
+          }
         });
       }
 
-      copierMethod.body().assign(copyVar.ref("__changeListener"), JExpr._new(changeListenerClass).arg(copyVar));
-      copierMethod.body().add(copyVar.invoke("addChangeListener").arg(copyVar.ref("__changeListener")));
+      JBlock isChangeListenerNotNull =
+          copierMethod.body()._if(JExpr.ref("__changeListener").ne(JExpr._null()))._then();
+      isChangeListenerNotNull.assign(copyVar.ref("__changeListener"), JExpr._new(changeListenerClass).arg(copyVar));
+      isChangeListenerNotNull.add(copyVar.invoke("addChangeListener").arg(copyVar.ref("__changeListener")));
+    }
+
+    // Reset the specific map from the super class
+    if (specificMapVar != null)
+    {
+      copierMethod.body().assign(copyVar.ref(specificMapVar.name()),
+          JExpr.cast(specificMapVar.type(), copyVar.ref("_specificMap")));
     }
 
     copierMethod.body()._return(copyVar);
@@ -533,7 +577,8 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
       throws JClassAlreadyExistsException
   {
     final JClass itemJClass = generate(arrayDataTemplateSpec.getItemClass());
-    final JClass dataJClass = generate(arrayDataTemplateSpec.getItemDataClass());
+    final JClass dataJClass = getDataClass(arrayDataTemplateSpec.getSchema().getItems());
+    final JClass specificElementArrayClass = getSpecificElementArrayClass(arrayDataTemplateSpec.getSchema().getItems());
 
     final boolean isDirect = CodeUtil.isDirectType(arrayDataTemplateSpec.getSchema().getItems());
     if (isDirect)
@@ -548,12 +593,15 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     /** see {@link #schemaForArrayItemsOrMapValues} */
     final DataSchema bareSchema = new ArrayDataSchema(schemaForArrayItemsOrMapValues(arrayDataTemplateSpec.getCustomInfo(), arrayDataTemplateSpec.getSchema().getItems()));
     final JVar schemaField = generateSchemaField(arrayClass, bareSchema, arrayDataTemplateSpec.getSourceFileFormat());
+    final JClass specificArrayProviderClass = generateSpecificListProvider(arrayClass, specificElementArrayClass, itemJClass, dataJClass);
+    arrayClass.field(JMod.PUBLIC | JMod.STATIC | JMod.FINAL, specificArrayProviderClass,
+        "SPECIFIC_DATA_COMPLEX_PROVIDER", JExpr._new(specificArrayProviderClass));
 
-    generateConstructorWithNoArg(arrayClass, _dataListClass);
-    generateConstructorWithInitialCapacity(arrayClass, _dataListClass);
-    generateConstructorWithCollection(arrayClass, itemJClass);
+    generateDataComplexConstructor(arrayClass, _dataListClass, specificElementArrayClass);
+    generateConstructorWithInitialCapacity(arrayClass, _dataListClass, specificElementArrayClass);
+    generateConstructorWithCollection(arrayClass, itemJClass, specificElementArrayClass);
     generateConstructorWithArg(arrayClass, schemaField, _dataListClass, itemJClass, dataJClass);
-    generateConstructorWithVarArgs(arrayClass, itemJClass);
+    generateConstructorWithVarArgs(arrayClass, itemJClass, specificElementArrayClass);
 
     if (_pathSpecMethods)
     {
@@ -564,7 +612,7 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
 
     if (_copierMethods)
     {
-      generateCopierMethods(arrayClass, Collections.emptyMap(), null);
+      generateCopierMethods(arrayClass, Collections.emptyMap(), null, null, null);
     }
 
     // Generate coercer overrides
@@ -607,6 +655,16 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
       setDeprecatedAnnotationAndJavadoc(enumSpec.getSchema(), value, enumConstant);
     }
     enumClass.enumConstant(DataTemplateUtil.UNKNOWN_ENUM);
+
+    JVar internedSymbol =
+        enumClass.field(JMod.PRIVATE | JMod.FINAL, getCodeModel().ref(String.class), "__internedSymbol");
+
+    JMethod constructor = enumClass.constructor(JMod.PRIVATE);
+    constructor.body().assign(internedSymbol, JExpr.invoke("name").invoke("intern"));
+
+    JMethod toString = enumClass.method(JMod.PUBLIC, getCodeModel().ref(String.class), "toString");
+    toString.annotate(Override.class);
+    toString.body()._return(internedSymbol);
   }
 
   protected void generateFixed(JDefinedClass fixedClass, FixedTemplateSpec fixedSpec)
@@ -623,11 +681,11 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     final JVar param = bytesConstructor.param(ByteString.class, "value");
     bytesConstructor.body().invoke(SUPER).arg(param).arg(schemaField);
 
-    generateConstructorWithObjectArg(fixedClass, schemaField, null);
+    generateConstructorWithObjectArg(fixedClass, schemaField, null, null);
 
     if (_copierMethods)
     {
-      generateCopierMethods(fixedClass, Collections.emptyMap(), null);
+      generateCopierMethods(fixedClass, Collections.emptyMap(), null, null,null);
     }
   }
 
@@ -635,7 +693,8 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
       throws JClassAlreadyExistsException
   {
     final JClass valueJClass = generate(mapSpec.getValueClass());
-    final JClass dataJClass = generate(mapSpec.getValueDataClass());
+    final JClass dataJClass = getDataClass(mapSpec.getSchema().getValues());
+    final JClass specificValueMapClass = getSpecificValueMapClass(mapSpec.getSchema().getValues());
 
     final boolean isDirect = CodeUtil.isDirectType(mapSpec.getSchema().getValues());
     if (isDirect)
@@ -649,10 +708,13 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
 
     final DataSchema bareSchema = new MapDataSchema(schemaForArrayItemsOrMapValues(mapSpec.getCustomInfo(), mapSpec.getSchema().getValues()));
     final JVar schemaField = generateSchemaField(mapClass, bareSchema, mapSpec.getSourceFileFormat());
+    final JClass specificMapProviderClass = generateSpecificMapProvider(mapClass, specificValueMapClass, valueJClass, dataJClass);
+    mapClass.field(JMod.PUBLIC | JMod.STATIC | JMod.FINAL, specificMapProviderClass,
+        "SPECIFIC_DATA_COMPLEX_PROVIDER", JExpr._new(specificMapProviderClass));
 
-    generateConstructorWithNoArg(mapClass, _dataMapClass);
-    generateConstructorWithInitialCapacity(mapClass, _dataMapClass);
-    generateConstructorWithInitialCapacityAndLoadFactor(mapClass);
+    generateDataComplexConstructor(mapClass, _dataMapClass, specificValueMapClass);
+    generateConstructorWithInitialCapacity(mapClass, _dataMapClass, specificValueMapClass);
+    generateConstructorWithInitialCapacityAndLoadFactor(mapClass, specificValueMapClass);
     generateConstructorWithMap(mapClass, valueJClass);
     generateConstructorWithArg(mapClass, schemaField, _dataMapClass, valueJClass, dataJClass);
 
@@ -665,7 +727,7 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
 
     if (_copierMethods)
     {
-      generateCopierMethods(mapClass, Collections.emptyMap(), null);
+      generateCopierMethods(mapClass, Collections.emptyMap(), null, null, null);
     }
 
     // Generate coercer overrides
@@ -711,6 +773,102 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     }
   }
 
+  private JClass getDataClass(DataSchema schema)
+  {
+    switch (schema.getDereferencedType())
+    {
+      case INT:
+        return getCodeModel().INT.boxify();
+      case FLOAT:
+        return getCodeModel().FLOAT.boxify();
+      case LONG:
+        return getCodeModel().LONG.boxify();
+      case DOUBLE:
+        return getCodeModel().DOUBLE.boxify();
+      case FIXED:
+      case BYTES:
+        return _byteStringClass;
+      case BOOLEAN:
+        return getCodeModel().BOOLEAN.boxify();
+      case STRING:
+      case ENUM:
+        return _stringClass;
+      case MAP:
+      case RECORD:
+      case UNION:
+        return _dataMapClass;
+      case ARRAY:
+        return _dataListClass;
+      default:
+        throw new TemplateOutputCastException(
+            "Cannot handle wrapped schema of type " + schema.getDereferencedType());
+    }
+  }
+
+  private JClass getSpecificValueMapClass(DataSchema schema)
+  {
+    switch (schema.getDereferencedType())
+    {
+      case INT:
+        return getCodeModel().ref(IntegerMap.IntegerSpecificValueMap.class);
+      case FLOAT:
+        return getCodeModel().ref(FloatMap.FloatSpecificValueMap.class);
+      case LONG:
+        return getCodeModel().ref(LongMap.LongSpecificValueMap.class);
+      case DOUBLE:
+        return getCodeModel().ref(DoubleMap.DoubleSpecificValueMap.class);
+      case FIXED:
+      case BYTES:
+        return getCodeModel().ref(BytesMap.ByteStringSpecificValueMap.class);
+      case BOOLEAN:
+        return getCodeModel().ref(BooleanMap.BooleanSpecificValueMap.class);
+      case STRING:
+      case ENUM:
+        return getCodeModel().ref(StringMap.StringSpecificValueMap.class);
+      case MAP:
+      case RECORD:
+      case UNION:
+        return getCodeModel().ref(WrappingMapTemplate.DataMapSpecificValueMap.class);
+      case ARRAY:
+        return getCodeModel().ref(WrappingMapTemplate.DataListSpecificValueMap.class);
+      default:
+        throw new TemplateOutputCastException(
+            "Cannot handle wrapped schema of type " + schema.getDereferencedType());
+    }
+  }
+
+  private JClass getSpecificElementArrayClass(DataSchema schema)
+  {
+    switch (schema.getDereferencedType())
+    {
+      case INT:
+        return getCodeModel().ref(IntegerArray.IntegerSpecificElementArray.class);
+      case FLOAT:
+        return getCodeModel().ref(FloatArray.FloatSpecificElementArray.class);
+      case LONG:
+        return getCodeModel().ref(LongArray.LongSpecificElementArray.class);
+      case DOUBLE:
+        return getCodeModel().ref(DoubleArray.DoubleSpecificElementArray.class);
+      case FIXED:
+      case BYTES:
+        return getCodeModel().ref(BytesArray.ByteStringSpecificElementArray.class);
+      case BOOLEAN:
+        return getCodeModel().ref(BooleanArray.BooleanSpecificElementArray.class);
+      case STRING:
+      case ENUM:
+        return getCodeModel().ref(StringArray.StringSpecificElementArray.class);
+      case MAP:
+      case RECORD:
+      case UNION:
+        return getCodeModel().ref(WrappingArrayTemplate.DataMapSpecificElementArray.class);
+      case ARRAY:
+        return getCodeModel().ref(WrappingArrayTemplate.DataListSpecificElementArray.class);
+      default:
+        throw new TemplateOutputCastException(
+            "Cannot handle wrapped schema of type " + schema.getDereferencedType());
+    }
+  }
+
   protected void generateRecord(JDefinedClass templateClass, RecordTemplateSpec recordSpec)
       throws JClassAlreadyExistsException
   {
@@ -729,12 +887,35 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
 
     // Generate instance vars
     Map<String, JVar> fieldVarMap = new HashMap<>();
+    Map<String, JVar> hasFieldVarMap = new HashMap<>();
+    Map<String, JType> fieldDataClassMap = new HashMap<>();
+    Map<String, JExpression> fieldNameExprMap = new HashMap<>();
     for (RecordTemplateSpec.Field field : recordSpec.getFields())
     {
       final String fieldName = field.getSchemaField().getName();
-      final JVar fieldVar =
-          templateClass.field(JMod.PRIVATE, generate(field.getType()), "_" + fieldName + "Field", JExpr._null());
+      JType fieldType = generate(field.getType());
+      JType unboxedFieldType = fieldType.unboxify();
+
+      final JVar fieldVar;
+      if (fieldType.equals(unboxedFieldType))
+      {
+        fieldVar = templateClass.field(JMod.PRIVATE, fieldType, "_" + fieldName + "Field", JExpr._null());
+      }
+      else
+      {
+        fieldVar = templateClass.field(JMod.PRIVATE, unboxedFieldType, "_" + fieldName + "Field",
+            getDefaultPrimitiveExpression(unboxedFieldType));
+        JVar hasFieldVar = templateClass.field(JMod.PRIVATE, getCodeModel().BOOLEAN,
+            "_has" + StringUtils.capitalize(fieldName) + "Field", JExpr.lit(false));
+        hasFieldVarMap.put(fieldName, hasFieldVar);
+      }
+
       fieldVarMap.put(fieldName, fieldVar);
+      JType type = getDataClass(field.getSchemaField().getType());
+      fieldDataClassMap.put(fieldName, type);
+
+      final JExpression fieldNameExpr = JExpr.ref("FIELD_" + StringUtils.capitalize(fieldName)).invoke("getName");
+      fieldNameExprMap.put(fieldName, fieldNameExpr);
     }
 
     final JVar changeListenerVar;
@@ -742,17 +923,24 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     // Generate a change listener if there are any fields.
     if (!fieldVarMap.isEmpty())
     {
-      changeListenerClass = generateChangeListener(templateClass, fieldVarMap);
-      changeListenerVar = templateClass.field(JMod.PRIVATE, changeListenerClass, "__changeListener",
-          JExpr._new(changeListenerClass).arg(JExpr._this()));
+      changeListenerClass = generateChangeListener(templateClass, fieldVarMap, hasFieldVarMap);
+      changeListenerVar = templateClass.field(JMod.PRIVATE, changeListenerClass, "__changeListener");
     }
     else
     {
       changeListenerClass = null;
       changeListenerVar = null;
     }
-    generateDataMapConstructor(templateClass, schemaFieldVar, recordSpec.getFields().size(), recordSpec.getWrappedFields().size(), changeListenerVar);
-    generateConstructorWithArg(templateClass, schemaFieldVar, _dataMapClass, changeListenerVar);
+
+    final JClass specificMapClass = generateSpecificMap(templateClass, fieldVarMap, fieldDataClassMap, fieldNameExprMap);
+    final JVar specificMapVar = templateClass.field(JMod.PRIVATE, specificMapClass, "__specificMap");
+    final JClass specificMapProviderClass =
+        generateSpecificMapProvider(templateClass, fieldVarMap, fieldDataClassMap, specificMapClass);
+    templateClass.field(JMod.PUBLIC | JMod.STATIC | JMod.FINAL, specificMapProviderClass,
+        "SPECIFIC_DATA_COMPLEX_PROVIDER", JExpr._new(specificMapProviderClass));
+
+    generateDataMapConstructor(templateClass, schemaFieldVar, specificMapVar);
+    generateConstructorWithArg(templateClass, schemaFieldVar, _dataMapClass, changeListenerVar, specificMapVar);
 
     recordSpec.getFields().stream()
         .map(RecordTemplateSpec.Field::getCustomInfo)
@@ -764,12 +952,12 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     {
       final String fieldName = field.getSchemaField().getName();
       generateRecordFieldAccessors(templateClass, field, generate(field.getType()), schemaFieldVar,
-          fieldVarMap.get(fieldName));
+          fieldVarMap.get(fieldName), hasFieldVarMap.get(fieldName), specificMapVar);
     }
 
     if (_copierMethods)
     {
-      generateCopierMethods(templateClass, fieldVarMap, changeListenerClass);
+      generateCopierMethods(templateClass, fieldVarMap, hasFieldVarMap, changeListenerClass, specificMapVar);
     }
   }
 
@@ -778,44 +966,13 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
    * constructor that accepts a new instance of "DataMap" type (provided by _dataMapClass) and the SCHEMA.
    * @param cls DataTemplate class being constructed.
    * @param schemaField SCHEMA field to use for initialization.
-   * @param initialDataMapSize Initial size for the DataMap, applied only if the capacity derived from this is smaller
-   *                           than {@link #DEFAULT_DATAMAP_INITIAL_CAPACITY}.
-   * @param initialCacheSize Initial size for the cache, applied only if capacity derived from this is smaller than
-   *                         {@link #DEFAULT_DATAMAP_INITIAL_CAPACITY}
-   * @param changeListenerVar The map change listener variable if any.
+   * @param specificMapVar The specific map variable.
    */
-  private void generateDataMapConstructor(JDefinedClass cls, JVar schemaField, int initialDataMapSize, int initialCacheSize,
-      JVar changeListenerVar)
+  private void generateDataMapConstructor(JDefinedClass cls, JVar schemaField, JVar specificMapVar)
   {
     final JMethod noArgConstructor = cls.constructor(JMod.PUBLIC);
-    JInvocation superConstructorArg = JExpr._new(_dataMapClass);
-    // Compute the DataMap initial capacity based on the load factor of 0.75. Use lower capacity if possible.
-    int initialDataMapCapacity = DataMapBuilder.getOptimumHashMapCapacityFromSize(initialDataMapSize);
-    if (initialDataMapCapacity < DEFAULT_DATAMAP_INITIAL_CAPACITY)
-    {
-      superConstructorArg.arg(JExpr.lit(initialDataMapCapacity)); // Initial capacity
-      superConstructorArg.arg(JExpr.lit(0.75f));  // Load factor.
-    }
-
-    // Compute the cache initial capacity based on the load factor of 0.75. Use lower capacity if possible.
-    int initialCacheCapacity = DataMapBuilder.getOptimumHashMapCapacityFromSize(initialCacheSize);
-
-    // If the cache size is positive and the capacity is less than the default data map initial capacity aka default
-    // HashMap capacity, then explicitly pass in the cache capacity param. Else don't pass it in, so that the default
-    // cache capacity gets used.
-    if (initialCacheSize > 0 && initialCacheCapacity < DEFAULT_DATAMAP_INITIAL_CAPACITY)
-    {
-      noArgConstructor.body().invoke(SUPER).arg(superConstructorArg).arg(schemaField).arg(JExpr.lit(initialCacheCapacity));
-    }
-    else
-    {
-      noArgConstructor.body().invoke(SUPER).arg(superConstructorArg).arg(schemaField);
-    }
-
-    if (changeListenerVar != null)
-    {
-      addChangeListenerRegistration(noArgConstructor, changeListenerVar);
-    }
+    noArgConstructor.body().invoke(SUPER).arg(JExpr._new(specificMapVar.type())).arg(schemaField);
+    noArgConstructor.body().assign(specificMapVar, JExpr.cast(specificMapVar.type(), JExpr._this().ref("_specificMap")));
   }
 
   protected void extendRecordBaseClass(JDefinedClass templateClass)
@@ -875,15 +1032,20 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
   }
 
   private void generateRecordFieldAccessors(JDefinedClass templateClass, RecordTemplateSpec.Field field, JClass type, JVar schemaFieldVar,
-      JVar fieldVar)
+      JVar fieldVar, JVar hasFieldVar, JVar specificMapVar)
   {
     final RecordDataSchema.Field schemaField = field.getSchemaField();
     final DataSchema fieldSchema = schemaField.getType();
     final String capitalizedName = CodeUtil.capitalize(schemaField.getName());
+    final String rawFieldVarName = fieldVar.name() + "Raw";
+    final String primitiveRawFieldVarName = fieldVar.name() + "PrimitiveRaw";
+    final String isSchemaTypeVarName = "_isSchemaType" +  StringUtils.capitalize(fieldVar.name());
+    final String coercedFieldVarName = fieldVar.name() + "Coerced";
+    final String hasCoercedFieldVarName = "_has" + StringUtils.capitalize(fieldVar.name()) + "Coerced";
 
     final JExpression mapRef = JExpr._super().ref("_map");
-    final JExpression fieldNameExpr = JExpr.lit(schemaField.getName());
     final String fieldFieldName = "FIELD_" + capitalizedName;
+    final JExpression fieldNameExpr = JExpr.ref(fieldFieldName).invoke("getName");
     final JFieldVar fieldField = templateClass.field(JMod.PRIVATE | JMod.STATIC | JMod.FINAL, RecordDataSchema.Field.class, fieldFieldName);
     fieldField.init(schemaFieldVar.invoke("getField").arg(schemaField.getName()));
 
@@ -895,7 +1057,7 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
       defaultField = templateClass.field(JMod.PRIVATE | JMod.STATIC | JMod.FINAL, type, defaultFieldName);
 
       templateClass.init().assign(defaultField, getCoerceOutputExpression(
-          fieldField.invoke("getDefault"), schemaField.getType(), type, field.getCustomInfo()));
+          fieldField.invoke("getDefault"), schemaField.getType(), type, field.getCustomInfo(), false));
     }
     else
     {
@@ -907,8 +1069,19 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     addAccessorDoc(templateClass, has, schemaField, "Existence checker");
     setDeprecatedAnnotationAndJavadoc(has, schemaField);
     final JBlock hasBody = has.body();
-    final JBlock hasInstanceVarBody = hasBody._if(fieldVar.ne(JExpr._null()))._then();
-    hasInstanceVarBody._return(JExpr.lit(true));
+    JVar localSpecificMapVar = hasBody.decl(JMod.FINAL, specificMapVar.type(), specificMapVar.name(), JExpr._this().ref(specificMapVar));
+    if (hasFieldVar != null)
+    {
+      hasBody._if(localSpecificMapVar.ne(JExpr._null()))._then()._return(
+          localSpecificMapVar.ref(isSchemaTypeVarName).cor(localSpecificMapVar.ref(rawFieldVarName).ne(JExpr._null())));
+      hasBody._if(hasFieldVar)._then()._return(JExpr.lit(true));
+    }
+    else
+    {
+      hasBody._if(localSpecificMapVar.ne(JExpr._null()))._then()._return(localSpecificMapVar.ref(rawFieldVarName).ne(JExpr._null()));
+      hasBody._if(fieldVar.ne(JExpr._null()))._then()._return(JExpr.lit(true));
+    }
+
     hasBody._return(mapRef.invoke("containsKey").arg(fieldNameExpr));
 
     if (_recordFieldRemove)
@@ -919,7 +1092,33 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
       addAccessorDoc(templateClass, remove, schemaField, "Remover");
       setDeprecatedAnnotationAndJavadoc(remove, schemaField);
       final JBlock removeBody = remove.body();
-      removeBody.add(mapRef.invoke("remove").arg(fieldNameExpr));
+      localSpecificMapVar = removeBody.decl(JMod.FINAL, specificMapVar.type(), specificMapVar.name(), JExpr._this().ref(specificMapVar));
+      JConditional specificMapRemoveCondition = removeBody._if(localSpecificMapVar.ne(JExpr._null()));
+      JBlock notNullCondition;
+      if (hasFieldVar != null)
+      {
+        notNullCondition = specificMapRemoveCondition._then()._if(
+            localSpecificMapVar.ref(isSchemaTypeVarName).cor(localSpecificMapVar.ref(rawFieldVarName).ne(JExpr._null())))._then();
+      }
+      else
+      {
+        notNullCondition = specificMapRemoveCondition._then()._if(localSpecificMapVar.ref(rawFieldVarName).ne(JExpr._null()))._then();
+      }
+      notNullCondition.assign(localSpecificMapVar.ref(rawFieldVarName), JExpr._null());
+      if (hasFieldVar != null)
+      {
+        notNullCondition.assign(localSpecificMapVar.ref(primitiveRawFieldVarName), getDefaultPrimitiveExpression(fieldVar.type()));
+        notNullCondition.assign(localSpecificMapVar.ref(isSchemaTypeVarName), JExpr.lit(false));
+        notNullCondition.assign(localSpecificMapVar.ref(coercedFieldVarName), getDefaultPrimitiveExpression(fieldVar.type()));
+        notNullCondition.assign(localSpecificMapVar.ref(hasCoercedFieldVarName), JExpr.lit(false));
+      }
+      else
+      {
+        notNullCondition.assign(localSpecificMapVar.ref(coercedFieldVarName), JExpr._null());
+      }
+
+      notNullCondition.assignPlus(localSpecificMapVar.ref("__size"), JExpr.lit(-1));
+      specificMapRemoveCondition._else().add(mapRef.invoke("remove").arg(fieldNameExpr));
     }
 
     final String getterName = JavaCodeUtil.getGetterName(getCodeModel(), type, capitalizedName);
@@ -955,14 +1154,44 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
         }
 
         JCase nullCase = modeSwitch._case(JExpr.ref("NULL"));
-        JConditional nullCaseConditional = nullCase.body()._if(fieldVar.ne(JExpr._null()));
-        nullCaseConditional._then()._return(fieldVar);
-        JBlock nullCaseConditionalElse = nullCaseConditional._else();
-        JVar rawValueVar = nullCaseConditionalElse.decl(
-            _objectClass, "__rawValue", mapRef.invoke("get").arg(fieldNameExpr));
-        nullCaseConditionalElse.assign(fieldVar,
-            getCoerceOutputExpression(rawValueVar, fieldSchema, type, field.getCustomInfo()));
-        nullCaseConditionalElse._return(fieldVar);
+        localSpecificMapVar = nullCase.body().decl(JMod.FINAL, specificMapVar.type(), specificMapVar.name(), JExpr._this().ref(specificMapVar));
+        JBlock specificMapNotNull = nullCase.body()._if(localSpecificMapVar.ne(JExpr._null()))._then();
+        JExpression rawValueInitExpr;
+
+        if (hasFieldVar != null)
+        {
+          specificMapNotNull._if(localSpecificMapVar.ref(hasCoercedFieldVarName))._then()._return(localSpecificMapVar.ref(coercedFieldVarName));
+          rawValueInitExpr = JOp.cond(localSpecificMapVar.ref(isSchemaTypeVarName),
+              localSpecificMapVar.ref(primitiveRawFieldVarName), localSpecificMapVar.ref(rawFieldVarName));
+        }
+        else
+        {
+          specificMapNotNull._if(localSpecificMapVar.ref(coercedFieldVarName).ne(JExpr._null()))._then()._return(localSpecificMapVar.ref(coercedFieldVarName));
+          rawValueInitExpr = localSpecificMapVar.ref(rawFieldVarName);
+        }
+
+        JVar rawValueVar = specificMapNotNull.decl(JMod.FINAL, _objectClass, "__rawValue", rawValueInitExpr);
+        specificMapNotNull._if(rawValueVar.eq(JExpr._null()))._then()._return(JExpr._null());
+        specificMapNotNull.assign(localSpecificMapVar.ref(coercedFieldVarName), getCoerceOutputExpression(rawValueVar, fieldSchema, type, field.getCustomInfo(), true));
+        if (hasFieldVar != null)
+        {
+          specificMapNotNull.assign(localSpecificMapVar.ref(hasCoercedFieldVarName), JExpr.lit(true));
+        }
+        specificMapNotNull._return(localSpecificMapVar.ref(coercedFieldVarName));
+
+        if (hasFieldVar != null)
+        {
+          nullCase.body()._if(hasFieldVar)._then()._return(fieldVar);
+        }
+        else
+        {
+          nullCase.body()._if(fieldVar.ne(JExpr._null()))._then()._return(fieldVar);
+        }
+
+        rawValueVar = nullCase.body().decl(JMod.FINAL, _objectClass, "__rawValue", mapRef.invoke("get").arg(fieldNameExpr));
+        nullCase.body()._if(rawValueVar.eq(JExpr._null()))._then()._return(JExpr._null());
+        nullCase.body().assign(fieldVar, getCoerceOutputExpression(rawValueVar, fieldSchema, type, field.getCustomInfo(), true));
+        nullCase.body()._return(fieldVar);
 
         getterWithModeBody._throw(JExpr._new(getCodeModel().ref(IllegalStateException.class)).arg(JExpr.lit("Unknown mode ").plus(modeParam)));
       }
@@ -984,23 +1213,72 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
       returnComment.add("Required field. Could be null for partial record.");
     }
     final JBlock getterWithoutModeBody = getterWithoutMode.body();
-    JConditional getterWithoutModeBodyConditional = getterWithoutModeBody._if(fieldVar.ne(JExpr._null()));
-    getterWithoutModeBodyConditional._then()._return(fieldVar);
-    JBlock getterWithoutModeBodyConditionalElse = getterWithoutModeBodyConditional._else();
-    JVar rawValueVar = getterWithoutModeBodyConditionalElse.decl(
-        _objectClass, "__rawValue", mapRef.invoke("get").arg(fieldNameExpr));
+
+    localSpecificMapVar = getterWithoutModeBody.decl(JMod.FINAL, specificMapVar.type(), specificMapVar.name(), JExpr._this().ref(specificMapVar));
+    JBlock specificMapNotNull = getterWithoutModeBody._if(localSpecificMapVar.ne(JExpr._null()))._then();
+    JExpression rawValueInitExpr;
+    if (hasFieldVar != null)
+    {
+      specificMapNotNull._if(localSpecificMapVar.ref(hasCoercedFieldVarName))._then()._return(localSpecificMapVar.ref(coercedFieldVarName));
+      rawValueInitExpr = JOp.cond(localSpecificMapVar.ref(isSchemaTypeVarName),
+          localSpecificMapVar.ref(primitiveRawFieldVarName), localSpecificMapVar.ref(rawFieldVarName));
+    }
+    else
+    {
+      specificMapNotNull._if(specificMapVar.ref(coercedFieldVarName).ne(JExpr._null()))._then()._return(localSpecificMapVar.ref(coercedFieldVarName));
+      rawValueInitExpr = localSpecificMapVar.ref(rawFieldVarName);
+    }
+
+    JVar rawValueVar = specificMapNotNull.decl(JMod.FINAL, _objectClass, "__rawValue", rawValueInitExpr);
     if (schemaField.getDefault() != null)
     {
-      getterWithoutModeBodyConditionalElse._if(rawValueVar.eq(JExpr._null()))._then()._return(defaultField);
+      specificMapNotNull._if(rawValueVar.eq(JExpr._null()))._then()._return(defaultField);
     }
     else if (!schemaField.getOptional())
     {
-      getterWithoutModeBodyConditionalElse._if(rawValueVar.eq(JExpr._null()))._then()._throw(
+      specificMapNotNull._if(rawValueVar.eq(JExpr._null()))._then()._throw(
           JExpr._new(getCodeModel().ref(RequiredFieldNotPresentException.class)).arg(fieldNameExpr));
     }
-    getterWithoutModeBodyConditionalElse.assign(fieldVar,
-        getCoerceOutputExpression(rawValueVar, fieldSchema, type, field.getCustomInfo()));
-    getterWithoutModeBodyConditionalElse._return(fieldVar);
+    else
+    {
+      specificMapNotNull._if(rawValueVar.eq(JExpr._null()))._then()._return(JExpr._null());
+    }
+
+    specificMapNotNull.assign(localSpecificMapVar.ref(coercedFieldVarName), getCoerceOutputExpression(rawValueVar, fieldSchema, type, field.getCustomInfo(), true));
+    if (hasFieldVar != null)
+    {
+      specificMapNotNull.assign(localSpecificMapVar.ref(hasCoercedFieldVarName), JExpr.lit(true));
+    }
+    specificMapNotNull._return(localSpecificMapVar.ref(coercedFieldVarName));
+
+    if (hasFieldVar != null)
+    {
+      getterWithoutModeBody._if(hasFieldVar)._then()._return(fieldVar);
+    }
+    else
+    {
+      getterWithoutModeBody._if(fieldVar.ne(JExpr._null()))._then()._return(fieldVar);
+    }
+
+    rawValueVar = getterWithoutModeBody.decl(
+        JMod.FINAL, _objectClass, "__rawValue", mapRef.invoke("get").arg(fieldNameExpr));
+    if (schemaField.getDefault() != null)
+    {
+      getterWithoutModeBody._if(rawValueVar.eq(JExpr._null()))._then()._return(defaultField);
+    }
+    else if (!schemaField.getOptional())
+    {
+      getterWithoutModeBody._if(rawValueVar.eq(JExpr._null()))._then()._throw(
+          JExpr._new(getCodeModel().ref(RequiredFieldNotPresentException.class)).arg(fieldNameExpr));
+    }
+    else
+    {
+      getterWithoutModeBody._if(rawValueVar.eq(JExpr._null()))._then()._return(JExpr._null());
+    }
+
+    getterWithoutModeBody.assign(fieldVar,
+        getCoerceOutputExpression(rawValueVar, fieldSchema, type, field.getCustomInfo(), true));
+    getterWithoutModeBody._return(fieldVar);
 
     final String setterName = "set" + capitalizedName;
 
@@ -1023,28 +1301,122 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
         JConditional paramIsNull = removeOptionalIfNullCase.body()._if(param.eq(JExpr._null()));
         paramIsNull._then()._throw(JExpr._new(getCodeModel().ref(IllegalArgumentException.class))
             .arg(JExpr.lit("Cannot remove mandatory field " + schemaField.getName() + " of " + templateClass.fullName())));
-        paramIsNull._else()
-            .add(_checkedUtilClass.staticInvoke("putWithoutCheckingOrChangeNotification").arg(mapRef).arg(fieldNameExpr)
-                .arg(getCoerceInputExpression(param, fieldSchema, field.getCustomInfo())));
-        paramIsNull._else().assign(fieldVar, param);
+        JBlock elseBlock = paramIsNull._else();
+        rawValueVar = elseBlock.decl(JMod.FINAL, _objectClass, "__rawValue", getCoerceInputExpression(param, fieldSchema, field.getCustomInfo()));
+        localSpecificMapVar = elseBlock.decl(JMod.FINAL, specificMapVar.type(), specificMapVar.name(), JExpr._this().ref(specificMapVar));
+        JConditional specificMapSetCondition = elseBlock._if(localSpecificMapVar.ne(JExpr._null()));
+        JExpression specificMapSizeCondition;
+        if (hasFieldVar != null)
+        {
+          specificMapSizeCondition = localSpecificMapVar.ref(isSchemaTypeVarName).not().cand(localSpecificMapVar.ref(rawFieldVarName).eq(JExpr._null()));
+        }
+        else
+        {
+          specificMapSizeCondition = localSpecificMapVar.ref(rawFieldVarName).eq(JExpr._null());
+        }
+
+        specificMapSetCondition._then()._if(specificMapSizeCondition)._then().assignPlus(localSpecificMapVar.ref("__size"), JExpr.lit(1));
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(coercedFieldVarName), param);
+        if (hasFieldVar != null)
+        {
+          specificMapSetCondition._then().assign(localSpecificMapVar.ref(primitiveRawFieldVarName), JExpr.cast(fieldVar.type(), rawValueVar));
+          specificMapSetCondition._then().assign(localSpecificMapVar.ref(rawFieldVarName), JExpr._null());
+          specificMapSetCondition._then().assign(localSpecificMapVar.ref(hasCoercedFieldVarName), JExpr.lit(true));
+        }
+        else
+        {
+          specificMapSetCondition._then().assign(localSpecificMapVar.ref(rawFieldVarName), rawValueVar);
+        }
+
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(isSchemaTypeVarName), JExpr.lit(true));
+        specificMapSetCondition._else().add(
+            _checkedUtilClass.staticInvoke("putWithoutChecking")
+                .arg(mapRef).arg(fieldNameExpr).arg(rawValueVar));
+        specificMapSetCondition._else().assign(fieldVar, param);
+        if (hasFieldVar != null)
+        {
+          specificMapSetCondition._else().assign(hasFieldVar, JExpr.lit(true));
+        }
         removeOptionalIfNullCase.body()._break();
       }
 
       JCase removeIfNullCase = modeSwitch._case(JExpr.ref("REMOVE_IF_NULL"));
       JConditional paramIsNull = removeIfNullCase.body()._if(param.eq(JExpr._null()));
       paramIsNull._then().invoke("remove" + capitalizedName);
-      paramIsNull._else()
-          .add(_checkedUtilClass.staticInvoke("putWithoutCheckingOrChangeNotification").arg(mapRef).arg(fieldNameExpr)
-              .arg(getCoerceInputExpression(param, fieldSchema, field.getCustomInfo())));
-      paramIsNull._else().assign(fieldVar, param);
+      JBlock elseBlock = paramIsNull._else();
+      rawValueVar = elseBlock.decl(JMod.FINAL, _objectClass, "__rawValue", getCoerceInputExpression(param, fieldSchema, field.getCustomInfo()));
+      localSpecificMapVar = elseBlock.decl(JMod.FINAL, specificMapVar.type(), specificMapVar.name(), JExpr._this().ref(specificMapVar));
+      JConditional specificMapSetCondition = elseBlock._if(localSpecificMapVar.ne(JExpr._null()));
+      JExpression specificMapSizeCondition;
+      if (hasFieldVar != null)
+      {
+        specificMapSizeCondition = localSpecificMapVar.ref(isSchemaTypeVarName).not().cand(localSpecificMapVar.ref(rawFieldVarName).eq(JExpr._null()));
+      }
+      else
+      {
+        specificMapSizeCondition = localSpecificMapVar.ref(rawFieldVarName).eq(JExpr._null());
+      }
+
+      specificMapSetCondition._then()._if(specificMapSizeCondition)._then().assignPlus(localSpecificMapVar.ref("__size"), JExpr.lit(1));
+      specificMapSetCondition._then().assign(localSpecificMapVar.ref(coercedFieldVarName), param);
+      if (hasFieldVar != null)
+      {
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(primitiveRawFieldVarName), JExpr.cast(fieldVar.type(), rawValueVar));
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(rawFieldVarName), JExpr._null());
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(hasCoercedFieldVarName), JExpr.lit(true));
+      }
+      else
+      {
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(rawFieldVarName), rawValueVar);
+      }
+
+      specificMapSetCondition._then().assign(localSpecificMapVar.ref(isSchemaTypeVarName), JExpr.lit(true));
+      specificMapSetCondition._else().add(
+          _checkedUtilClass.staticInvoke("putWithoutChecking")
+              .arg(mapRef).arg(fieldNameExpr).arg(rawValueVar));
+      specificMapSetCondition._else().assign(fieldVar, param);
+      if (hasFieldVar != null)
+      {
+        specificMapSetCondition._else().assign(hasFieldVar, JExpr.lit(true));
+      }
       removeIfNullCase.body()._break();
 
       JCase ignoreNullCase = modeSwitch._case(JExpr.ref("IGNORE_NULL"));
-      JConditional paramIsNotNull = ignoreNullCase.body()._if(param.ne(JExpr._null()));
-      paramIsNotNull._then()
-          .add(_checkedUtilClass.staticInvoke("putWithoutCheckingOrChangeNotification").arg(mapRef).arg(fieldNameExpr)
-              .arg(getCoerceInputExpression(param, fieldSchema, field.getCustomInfo())));
-      paramIsNotNull._then().assign(fieldVar, param);
+      JBlock paramIsNotNull = ignoreNullCase.body()._if(param.ne(JExpr._null()))._then();
+      rawValueVar = paramIsNotNull.decl(JMod.FINAL, _objectClass, "__rawValue", getCoerceInputExpression(param, fieldSchema, field.getCustomInfo()));
+      localSpecificMapVar = paramIsNotNull.decl(JMod.FINAL, specificMapVar.type(), specificMapVar.name(), JExpr._this().ref(specificMapVar));
+      specificMapSetCondition = paramIsNotNull._if(localSpecificMapVar.ne(JExpr._null()));
+      if (hasFieldVar != null)
+      {
+        specificMapSizeCondition = localSpecificMapVar.ref(isSchemaTypeVarName).not().cand(localSpecificMapVar.ref(rawFieldVarName).eq(JExpr._null()));
+      }
+      else
+      {
+        specificMapSizeCondition = localSpecificMapVar.ref(rawFieldVarName).eq(JExpr._null());
+      }
+
+      specificMapSetCondition._then()._if(specificMapSizeCondition)._then().assignPlus(localSpecificMapVar.ref("__size"), JExpr.lit(1));
+      specificMapSetCondition._then().assign(localSpecificMapVar.ref(coercedFieldVarName), param);
+      if (hasFieldVar != null)
+      {
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(primitiveRawFieldVarName), JExpr.cast(fieldVar.type(), rawValueVar));
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(rawFieldVarName), JExpr._null());
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(hasCoercedFieldVarName), JExpr.lit(true));
+      }
+      else
+      {
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(rawFieldVarName), rawValueVar);
+      }
+
+      specificMapSetCondition._then().assign(localSpecificMapVar.ref(isSchemaTypeVarName), JExpr.lit(true));
+      specificMapSetCondition._else().add(
+          _checkedUtilClass.staticInvoke("putWithoutChecking")
+              .arg(mapRef).arg(fieldNameExpr).arg(rawValueVar));
+      specificMapSetCondition._else().assign(fieldVar, param);
+      if (hasFieldVar != null)
+      {
+        specificMapSetCondition._else().assign(hasFieldVar, JExpr.lit(true));
+      }
       ignoreNullCase.body()._break();
 
       setterWithMode.body()._return(JExpr._this());
@@ -1061,10 +1433,42 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     JConditional paramIsNull = setter.body()._if(param.eq(JExpr._null()));
     paramIsNull._then()._throw(JExpr._new(getCodeModel().ref(NullPointerException.class))
         .arg(JExpr.lit("Cannot set field " + schemaField.getName() + " of " + templateClass.fullName() + " to null")));
-    paramIsNull._else()
-        .add(_checkedUtilClass.staticInvoke("putWithoutCheckingOrChangeNotification").arg(mapRef).arg(fieldNameExpr)
-            .arg(getCoerceInputExpression(param, fieldSchema, field.getCustomInfo())));
-    paramIsNull._else().assign(fieldVar, param);
+    JBlock elseBlock = paramIsNull._else();
+    rawValueVar = elseBlock.decl(JMod.FINAL, _objectClass, "__rawValue", getCoerceInputExpression(param, fieldSchema, field.getCustomInfo()));
+    localSpecificMapVar = elseBlock.decl(JMod.FINAL, specificMapVar.type(), specificMapVar.name(), JExpr._this().ref(specificMapVar));
+    JConditional specificMapSetCondition = elseBlock._if(localSpecificMapVar.ne(JExpr._null()));
+    JExpression specificMapSizeCondition;
+    if (hasFieldVar != null)
+    {
+      specificMapSizeCondition = localSpecificMapVar.ref(isSchemaTypeVarName).not().cand(localSpecificMapVar.ref(rawFieldVarName).eq(JExpr._null()));
+    }
+    else
+    {
+      specificMapSizeCondition = localSpecificMapVar.ref(rawFieldVarName).eq(JExpr._null());
+    }
+
+    specificMapSetCondition._then()._if(specificMapSizeCondition)._then().assignPlus(localSpecificMapVar.ref("__size"), JExpr.lit(1));
+    specificMapSetCondition._then().assign(localSpecificMapVar.ref(coercedFieldVarName), param);
+    if (hasFieldVar != null)
+    {
+      specificMapSetCondition._then().assign(localSpecificMapVar.ref(primitiveRawFieldVarName), JExpr.cast(fieldVar.type(), rawValueVar));
+      specificMapSetCondition._then().assign(localSpecificMapVar.ref(rawFieldVarName), JExpr._null());
+      specificMapSetCondition._then().assign(localSpecificMapVar.ref(hasCoercedFieldVarName), JExpr.lit(true));
+    }
+    else
+    {
+      specificMapSetCondition._then().assign(localSpecificMapVar.ref(rawFieldVarName), rawValueVar);
+    }
+
+    specificMapSetCondition._then().assign(localSpecificMapVar.ref(isSchemaTypeVarName), JExpr.lit(true));
+    specificMapSetCondition._else().add(
+        _checkedUtilClass.staticInvoke("putWithoutChecking")
+            .arg(mapRef).arg(fieldNameExpr).arg(rawValueVar));
+    specificMapSetCondition._else().assign(fieldVar, param);
+    if (hasFieldVar != null)
+    {
+      specificMapSetCondition._else().assign(hasFieldVar, JExpr.lit(true));
+    }
     setter.body()._return(JExpr._this());
 
     // Setter method without mode for unboxified type
@@ -1074,9 +1478,38 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
       addAccessorDoc(templateClass, unboxifySetter, schemaField, "Setter");
       setDeprecatedAnnotationAndJavadoc(unboxifySetter, schemaField);
       param = unboxifySetter.param(type.unboxify(), "value");
-      unboxifySetter.body().add(_checkedUtilClass.staticInvoke("putWithoutCheckingOrChangeNotification").arg(mapRef).arg(fieldNameExpr)
-              .arg(getCoerceInputExpression(param, fieldSchema, field.getCustomInfo())));
-      unboxifySetter.body().assign(fieldVar, param);
+      localSpecificMapVar = unboxifySetter.body().decl(JMod.FINAL, specificMapVar.type(), specificMapVar.name(), JExpr._this().ref(specificMapVar));
+      specificMapSetCondition = unboxifySetter.body()._if(localSpecificMapVar.ne(JExpr._null()));
+      if (hasFieldVar != null)
+      {
+        specificMapSizeCondition = localSpecificMapVar.ref(isSchemaTypeVarName).not().cand(localSpecificMapVar.ref(rawFieldVarName).eq(JExpr._null()));
+      }
+      else
+      {
+        specificMapSizeCondition = localSpecificMapVar.ref(rawFieldVarName).eq(JExpr._null());
+      }
+
+      specificMapSetCondition._then()._if(specificMapSizeCondition)._then().assignPlus(localSpecificMapVar.ref("__size"), JExpr.lit(1));
+      specificMapSetCondition._then().assign(localSpecificMapVar.ref(coercedFieldVarName), param);
+      if (hasFieldVar != null)
+      {
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(primitiveRawFieldVarName), param);
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(rawFieldVarName), JExpr._null());
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(hasCoercedFieldVarName), JExpr.lit(true));
+      }
+      else
+      {
+        specificMapSetCondition._then().assign(localSpecificMapVar.ref(rawFieldVarName), param);
+      }
+
+      specificMapSetCondition._then().assign(localSpecificMapVar.ref(isSchemaTypeVarName), JExpr.lit(true));
+      specificMapSetCondition._else().add(_checkedUtilClass.staticInvoke("putWithoutChecking").arg(mapRef).arg(fieldNameExpr)
+              .arg(param));
+      specificMapSetCondition._else().assign(fieldVar, param);
+      if (hasFieldVar != null)
+      {
+        specificMapSetCondition._else().assign(hasFieldVar, JExpr.lit(true));
+      }
       unboxifySetter.body()._return(JExpr._this());
     }
   }
@@ -1106,14 +1539,36 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
 
     // Generate instance vars for members.
     Map<String, JVar> memberVarMap = new HashMap<>();
+    Map<String, JVar> hasMemberVarMap = new HashMap<>();
+    Map<String, JType> memberDataClassMap = new HashMap<>();
+    Map<String, JExpression> memberNameExprMap = new HashMap<>();
     for (UnionTemplateSpec.Member member : unionSpec.getMembers())
     {
       if (member.getClassTemplateSpec() != null)
       {
         final String memberName = CodeUtil.uncapitalize(CodeUtil.getUnionMemberName(member));
-        final JVar memberVar =
-            unionClass.field(JMod.PRIVATE, generate(member.getClassTemplateSpec()), "_" + memberName + "Member", JExpr._null());
+        JType memberType = generate(member.getClassTemplateSpec());
+        JType unboxifiedMemberType = memberType.unboxify();
+        final JVar memberVar;
+
+        if (memberType.equals(unboxifiedMemberType))
+        {
+          memberVar = unionClass.field(JMod.PRIVATE, memberType, "_" + memberName + "Member", JExpr._null());
+        }
+        else
+        {
+          memberVar = unionClass.field(JMod.PRIVATE, unboxifiedMemberType, "_" + memberName + "Member",
+              getDefaultPrimitiveExpression(unboxifiedMemberType));
+          JVar hasMemberVar = unionClass.field(JMod.PRIVATE, getCodeModel().BOOLEAN,
+              "_has" + StringUtils.capitalize(memberName) + "Member", JExpr.lit(false));
+          hasMemberVarMap.put(member.getUnionMemberKey(), hasMemberVar);
+        }
+
         memberVarMap.put(member.getUnionMemberKey(), memberVar);
+        memberDataClassMap.put(member.getUnionMemberKey(), getDataClass(member.getSchema()));
+
+        final JExpression fieldNameExpr = JExpr.ref("MEMBER_" + StringUtils.capitalize(memberName)).invoke("getUnionMemberKey");
+        memberNameExprMap.put(member.getUnionMemberKey(), fieldNameExpr);
       }
     }
 
@@ -1123,9 +1578,8 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     // Generate change listener if there are any members.
     if (!memberVarMap.isEmpty())
     {
-      changeListenerClass = generateChangeListener(unionClass, memberVarMap);
-      changeListenerVar = unionClass.field(JMod.PRIVATE, changeListenerClass, "__changeListener",
-          JExpr._new(changeListenerClass).arg(JExpr._this()));
+      changeListenerClass = generateChangeListener(unionClass, memberVarMap, hasMemberVarMap);
+      changeListenerVar = unionClass.field(JMod.PRIVATE, changeListenerClass, "__changeListener");
     }
     else
     {
@@ -1133,17 +1587,25 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
       changeListenerVar = null;
     }
 
+    final JClass specificMapClass = generateSpecificMap(unionClass, memberVarMap, memberDataClassMap, memberNameExprMap);
+    final JVar specificMapVar = unionClass.field(JMod.PRIVATE, specificMapClass, "__specificMap");
+    final JClass specificMapProviderClass =
+        generateSpecificMapProvider(unionClass, memberVarMap, memberDataClassMap, specificMapClass);
+    unionClass.field(JMod.PUBLIC | JMod.STATIC | JMod.FINAL, specificMapProviderClass,
+        "SPECIFIC_DATA_COMPLEX_PROVIDER", JExpr._new(specificMapProviderClass));
+
     // Default union datamap size to 1 (last arg) as union can have at-most one element.
     // We don't need cache for unions, so pass in -1 for cache size to ignore size param.
-    generateDataMapConstructor(unionClass, schemaField, 1, -1, changeListenerVar);
-    generateConstructorWithObjectArg(unionClass, schemaField, changeListenerVar);
+    generateDataMapConstructor(unionClass, schemaField, specificMapVar);
+    generateConstructorWithObjectArg(unionClass, schemaField, changeListenerVar, specificMapVar);
 
     for (UnionTemplateSpec.Member member : unionSpec.getMembers())
     {
       if (member.getClassTemplateSpec() != null)
       {
         generateUnionMemberAccessors(unionClass, member, generate(member.getClassTemplateSpec()),
-            generate(member.getDataClass()), schemaField, memberVarMap.get(member.getUnionMemberKey()));
+            schemaField, memberVarMap.get(member.getUnionMemberKey()), hasMemberVarMap.get(member.getUnionMemberKey()),
+            specificMapVar);
       }
     }
 
@@ -1159,7 +1621,7 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
 
     if (_copierMethods)
     {
-      generateCopierMethods(unionClass, memberVarMap, changeListenerClass);
+      generateCopierMethods(unionClass, memberVarMap, hasMemberVarMap, changeListenerClass, specificMapVar);
     }
 
     if (unionSpec.getTyperefClass() != null)
@@ -1183,16 +1645,22 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
   }
 
   private void generateUnionMemberAccessors(JDefinedClass unionClass, UnionTemplateSpec.Member member,
-      JClass memberClass, JClass dataClass, JVar schemaField, JVar memberVar)
+      JClass memberClass, JVar schemaField, JVar memberVar, JVar hasMemberVar, JVar specificMapVar)
   {
     final DataSchema memberType = member.getSchema();
     final String memberKey = member.getUnionMemberKey();
+    final String memberRawKey = memberVar.name() + "Raw";
+    final String primitiveRawMemberVarKey = memberVar.name() + "PrimitiveRaw";
+    final String memberCoercedKey = memberVar.name() + "Coerced";
+    final String isSchemaTypeVarName = "_isSchemaType" + StringUtils.capitalize(memberVar.name());
+    final String hasMemberCoercedKey = "_has" + StringUtils.capitalize(memberVar.name()) + "Coerced";
     final String capitalizedName = CodeUtil.getUnionMemberName(member);
     final JExpression mapRef = JExpr._super().ref("_map");
 
     final String memberFieldName = "MEMBER_" + capitalizedName;
-    final JFieldVar memberField = unionClass.field(JMod.PRIVATE | JMod.STATIC | JMod.FINAL, DataSchema.class, memberFieldName);
-    memberField.init(schemaField.invoke("getTypeByMemberKey").arg(memberKey));
+    final JExpression memberNameExpr = JExpr.ref(memberFieldName).invoke("getUnionMemberKey");
+    final JFieldVar memberField = unionClass.field(JMod.PRIVATE | JMod.STATIC | JMod.FINAL, UnionDataSchema.Member.class, memberFieldName);
+    memberField.init(schemaField.invoke("getMemberByMemberKey").arg(memberKey));
     final String setterName = "set" + capitalizedName;
 
     // Generate builder.
@@ -1208,8 +1676,20 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
 
     final JMethod is = unionClass.method(JMod.PUBLIC, getCodeModel().BOOLEAN, "is" + capitalizedName);
     final JBlock isBody = is.body();
-    JExpression res = JExpr.invoke("memberIs").arg(JExpr.lit(memberKey));
-    isBody._return(res);
+    JVar localSpecificMapVar = isBody.decl(JMod.FINAL, specificMapVar.type(), specificMapVar.name(), JExpr._this().ref(specificMapVar));
+    if (hasMemberVar != null)
+    {
+      isBody._if(localSpecificMapVar.ne(JExpr._null()))._then()._return(
+          localSpecificMapVar.ref(isSchemaTypeVarName).cor(localSpecificMapVar.ref(memberRawKey).ne(JExpr._null())));
+      isBody._if(hasMemberVar)._then()._return(JExpr.lit(true));
+    }
+    else
+    {
+      isBody._if(localSpecificMapVar.ne(JExpr._null()))._then()._return(localSpecificMapVar.ref(memberRawKey).ne(JExpr._null()));
+      isBody._if(memberVar.ne(JExpr._null()))._then()._return(JExpr.lit(true));
+    }
+
+    isBody._return(JExpr.invoke("memberIs").arg(memberNameExpr));
 
     // Getter method.
 
@@ -1217,10 +1697,42 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     final JMethod getter = unionClass.method(JMod.PUBLIC, memberClass, getterName);
     final JBlock getterBody = getter.body();
     getterBody.invoke("checkNotNull");
-    JBlock memberVarNonNullBlock = getterBody._if(memberVar.ne(JExpr._null()))._then();
-    memberVarNonNullBlock._return(memberVar);
-    JVar rawValueVar = getterBody.decl(_objectClass, "__rawValue", mapRef.invoke("get").arg(JExpr.lit(memberKey)));
-    getterBody.assign(memberVar, getCoerceOutputExpression(rawValueVar, memberType, memberClass, member.getCustomInfo()));
+    localSpecificMapVar = getterBody.decl(JMod.FINAL, specificMapVar.type(), specificMapVar.name(), JExpr._this().ref(specificMapVar));
+    JBlock specificMapNotNull = getterBody._if(localSpecificMapVar.ne(JExpr._null()))._then();
+    JExpression rawValueInitExpr;
+    if (hasMemberVar != null)
+    {
+      specificMapNotNull._if(localSpecificMapVar.ref(hasMemberCoercedKey))._then()._return(localSpecificMapVar.ref(memberCoercedKey));
+      rawValueInitExpr = JOp.cond(localSpecificMapVar.ref(isSchemaTypeVarName),
+          localSpecificMapVar.ref(primitiveRawMemberVarKey), localSpecificMapVar.ref(memberRawKey));
+    }
+    else
+    {
+      specificMapNotNull._if(localSpecificMapVar.ref(memberCoercedKey).ne(JExpr._null()))._then()._return(localSpecificMapVar.ref(memberCoercedKey));
+      rawValueInitExpr = localSpecificMapVar.ref(memberRawKey);
+    }
+
+    JVar rawValueVar = specificMapNotNull.decl(JMod.FINAL, _objectClass, "__rawValue", rawValueInitExpr);
+    specificMapNotNull._if(rawValueVar.eq(JExpr._null()))._then()._return(JExpr._null());
+    specificMapNotNull.assign(localSpecificMapVar.ref(memberCoercedKey), getCoerceOutputExpression(rawValueVar, memberType, memberClass, member.getCustomInfo(), true));
+    if (hasMemberVar != null)
+    {
+      specificMapNotNull.assign(localSpecificMapVar.ref(hasMemberCoercedKey), JExpr.lit(true));
+    }
+    specificMapNotNull._return(localSpecificMapVar.ref(memberCoercedKey));
+
+    if (hasMemberVar != null)
+    {
+      getterBody._if(hasMemberVar)._then()._return(memberVar);
+    }
+    else
+    {
+      getterBody._if(memberVar.ne(JExpr._null()))._then()._return(memberVar);
+    }
+
+    rawValueVar =  getterBody.decl(JMod.FINAL, _objectClass, "__rawValue", mapRef.invoke("get").arg(memberNameExpr));
+    getterBody._if(rawValueVar.eq(JExpr._null()))._then()._return(JExpr._null());
+    getterBody.assign(memberVar, getCoerceOutputExpression(rawValueVar, memberType, memberClass, member.getCustomInfo(), true));
     getterBody._return(memberVar);
 
     // Setter method.
@@ -1230,9 +1742,38 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     final JBlock setterBody = setter.body();
     setterBody.invoke("checkNotNull");
     setterBody.add(mapRef.invoke("clear"));
+    localSpecificMapVar = setterBody.decl(JMod.FINAL, specificMapVar.type(), specificMapVar.name(), JExpr._this().ref(specificMapVar));
+    rawValueVar = setterBody.decl(JMod.FINAL, _objectClass, "__rawValue", getCoerceInputExpression(param, memberType, member.getCustomInfo()));
+    specificMapNotNull = setterBody._if(localSpecificMapVar.ne(JExpr._null()))._then();
+    JConditional rawValueNotNull = specificMapNotNull._if(rawValueVar.ne(JExpr._null()));
+    rawValueNotNull._then().assign(localSpecificMapVar.ref("__size"), JExpr.lit(1));
+    if (hasMemberVar != null)
+    {
+      specificMapNotNull.assign(localSpecificMapVar.ref(memberRawKey), JExpr._null());
+      rawValueNotNull._then().assign(localSpecificMapVar.ref(memberCoercedKey), param);
+      rawValueNotNull._then().assign(localSpecificMapVar.ref(primitiveRawMemberVarKey), param);
+      rawValueNotNull._then().assign(localSpecificMapVar.ref(isSchemaTypeVarName), JExpr.lit(true));
+      rawValueNotNull._then().assign(localSpecificMapVar.ref(hasMemberCoercedKey), JExpr.lit(true));
+      rawValueNotNull._else().assign(localSpecificMapVar.ref(memberCoercedKey), getDefaultPrimitiveExpression(memberVar.type()));
+      rawValueNotNull._else().assign(localSpecificMapVar.ref(primitiveRawMemberVarKey), getDefaultPrimitiveExpression(memberVar.type()));
+      rawValueNotNull._else().assign(localSpecificMapVar.ref(isSchemaTypeVarName), JExpr.lit(false));
+      rawValueNotNull._else().assign(localSpecificMapVar.ref(hasMemberCoercedKey), JExpr.lit(false));
+    }
+    else
+    {
+      specificMapNotNull.assign(localSpecificMapVar.ref(memberCoercedKey), param);
+      specificMapNotNull.assign(localSpecificMapVar.ref(memberRawKey), rawValueVar);
+      specificMapNotNull.assign(localSpecificMapVar.ref(isSchemaTypeVarName), JExpr.lit(false));
+    }
+    specificMapNotNull._return();
+
     setterBody.assign(memberVar, param);
-    setterBody.add(_checkedUtilClass.staticInvoke("putWithoutCheckingOrChangeNotification").arg(mapRef).arg(JExpr.lit(memberKey))
-        .arg(getCoerceInputExpression(param, memberType, member.getCustomInfo())));
+    if (hasMemberVar != null)
+    {
+      setterBody.assign(hasMemberVar, param.ne(JExpr._null()));
+    }
+    setterBody.add(_checkedUtilClass.staticInvoke("putWithoutChecking").arg(mapRef).arg(memberNameExpr)
+        .arg(rawValueVar));
   }
 
   private void generatePathSpecMethodsForUnion(UnionTemplateSpec unionSpec, JDefinedClass unionClass)
@@ -1418,56 +1959,58 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     {
       coerceOutput.body()._if(outputParam.eq(JExpr._null()))._then()._return(JExpr._null());
     }
-    else
-    {
-      coerceOutput.body().directStatement("assert(object != null);");
-    }
-    coerceOutput.body()._return(getCoerceOutputExpression(outputParam, itemSchema, valueType, customInfoSpec));
+
+    coerceOutput.body()._return(getCoerceOutputExpression(outputParam, itemSchema, valueType, customInfoSpec, true));
   }
 
-  private void generateConstructorWithInitialCapacity(JDefinedClass cls, JClass elementClass)
+  private void generateConstructorWithInitialCapacity(JDefinedClass cls, JClass elementClass, JClass specificCollectionClass)
   {
     final JMethod argConstructor = cls.constructor(JMod.PUBLIC);
     final JVar initialCapacity = argConstructor.param(getCodeModel().INT, "initialCapacity");
-    argConstructor.body().invoke(THIS).arg(JExpr._new(elementClass).arg(initialCapacity));
+    argConstructor.body().invoke(THIS).arg(JExpr._new(elementClass).arg(
+        JExpr._new(specificCollectionClass).arg(initialCapacity)));
   }
 
-  private void generateConstructorWithCollection(JDefinedClass cls, JClass elementClass)
+  private void generateConstructorWithCollection(JDefinedClass cls, JClass elementClass, JClass specificValueListClass)
   {
     final JMethod argConstructor = cls.constructor(JMod.PUBLIC);
     final JVar c = argConstructor.param(_collectionClass.narrow(elementClass), "c");
-    argConstructor.body().invoke(THIS).arg(JExpr._new(_dataListClass).arg(c.invoke("size")));
+    argConstructor.body().invoke(THIS).arg(JExpr._new(_dataListClass).arg(
+        JExpr._new(specificValueListClass).arg(c.invoke("size"))));
     argConstructor.body().invoke("addAll").arg(c);
   }
 
-  private void generateConstructorWithVarArgs(JDefinedClass cls, JClass elementClass)
+  private void generateConstructorWithVarArgs(JDefinedClass cls, JClass elementClass, JClass specificValueListClass)
   {
     final JMethod argConstructor = cls.constructor(JMod.PUBLIC);
     final JVar first = argConstructor.param(elementClass, "first");
     final JVar rest = argConstructor.varParam(elementClass, "rest");
     argConstructor.body().invoke(THIS).arg(JExpr._new(_dataListClass)
-        .arg(rest.ref("length").plus(JExpr.lit(1))));
+        .arg(JExpr._new(specificValueListClass).arg(rest.ref("length").plus(JExpr.lit(1)))));
     argConstructor.body().invoke("add").arg(first);
     argConstructor.body().invoke("addAll").arg(_arraysClass.staticInvoke("asList").arg(rest));
   }
 
-  private void generateConstructorWithInitialCapacityAndLoadFactor(JDefinedClass cls)
+  private void generateConstructorWithInitialCapacityAndLoadFactor(JDefinedClass cls, JClass specificCollectionClass)
   {
     final JMethod argConstructor = cls.constructor(JMod.PUBLIC);
     final JVar initialCapacity = argConstructor.param(getCodeModel().INT, "initialCapacity");
     final JVar loadFactor = argConstructor.param(getCodeModel().FLOAT, "loadFactor");
-    argConstructor.body().invoke(THIS).arg(JExpr._new(_dataMapClass).arg(initialCapacity).arg(loadFactor));
+    argConstructor.body().invoke(THIS).arg(JExpr._new(_dataMapClass).arg(
+        JExpr._new(specificCollectionClass).arg(initialCapacity).arg(loadFactor)));
   }
 
   private void generateConstructorWithMap(JDefinedClass cls, JClass valueClass)
   {
     final JMethod argConstructor = cls.constructor(JMod.PUBLIC);
     final JVar m = argConstructor.param(_mapClass.narrow(_stringClass, valueClass), "m");
-    argConstructor.body().invoke(THIS).arg(JExpr.invoke("newDataMapOfSize").arg(m.invoke("size")));
+    argConstructor.body().invoke(THIS).arg(JExpr.invoke("capacityFromSize").arg(m.invoke("size")));
     argConstructor.body().invoke("putAll").arg(m);
   }
 
-  private JClass generateChangeListener(JDefinedClass cls, Map<String, JVar> fieldMap) throws JClassAlreadyExistsException
+  private JClass generateChangeListener(JDefinedClass cls,
+      Map<String, JVar> fieldMap,
+      Map<String, JVar> hasFieldMap) throws JClassAlreadyExistsException
   {
     final JClass changeListenerInterface = getCodeModel().ref(CheckedMap.ChangeListener.class);
     final JDefinedClass changeListenerClass = cls._class(JMod.PRIVATE | JMod.STATIC, "ChangeListener");
@@ -1486,15 +2029,494 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     JSwitch keySwitch = method.body()._switch(keyParam);
     fieldMap.forEach((key, field) -> {
       JCase keyCase = keySwitch._case(JExpr.lit(key));
-      keyCase.body().assign(objectRefVar.ref(field.name()), JExpr._null());
+      JVar hasFieldVar = hasFieldMap.get(key);
+      if (hasFieldVar != null)
+      {
+        keyCase.body().assign(objectRefVar.ref(field.name()), getDefaultPrimitiveExpression(field.type()));
+        keyCase.body().assign(objectRefVar.ref(hasFieldVar.name()), JExpr.lit(false));
+      }
+      else
+      {
+        keyCase.body().assign(objectRefVar.ref(field.name()), JExpr._null());
+      }
+
       keyCase.body()._break();
     });
 
     return changeListenerClass;
   }
 
+  private JClass generateSpecificListProvider(JDefinedClass arrayClass,
+      JClass specificListClass,
+      JClass elementClass,
+      JClass elementDataClass) throws JClassAlreadyExistsException
+  {
+    final JClass providerInterface = getCodeModel().ref(SpecificDataComplexProvider.class);
+    final JDefinedClass providerClass = arrayClass._class(JMod.PRIVATE | JMod.STATIC, "SpecificListProvider");
+    providerClass._implements(providerInterface);
+
+    // Implement getList
+    JMethod getList = providerClass.method(JMod.PUBLIC, _listClass.narrow(Object.class), "getList");
+    getList.annotate(Override.class);
+    getList.body()._return(JExpr._new(specificListClass));
+
+    // Implement getDataListWithCapacity
+    JMethod getListWithCapacity = providerClass.method(JMod.PUBLIC, _listClass.narrow(Object.class), "getList");
+    getListWithCapacity.annotate(Override.class);
+    JVar capacityParam = getListWithCapacity.param(getCodeModel().INT, "__capacity");
+    getListWithCapacity.body()._return(JExpr._new(specificListClass).arg(capacityParam));
+
+    // Implement getChild
+    JMethod getChild = providerClass.method(JMod.PUBLIC, providerInterface, "getChild");
+    getChild.annotate(Override.class);
+    if (elementDataClass != null && (elementDataClass.equals(_dataMapClass) || elementDataClass.equals(_dataListClass)))
+    {
+      getChild.body()._return(elementClass.staticRef("SPECIFIC_DATA_COMPLEX_PROVIDER"));
+    }
+    else
+    {
+      getChild.body()._return(providerInterface.staticRef("DEFAULT"));
+    }
+
+    return providerClass;
+  }
+
+  private JClass generateSpecificMapProvider(JDefinedClass mapClass,
+      JClass specificMapClass,
+      JClass valueClass,
+      JClass valueDataClass) throws JClassAlreadyExistsException
+  {
+    final JClass providerInterface = getCodeModel().ref(SpecificDataComplexProvider.class);
+    final JDefinedClass providerClass = mapClass._class(JMod.PRIVATE | JMod.STATIC, "SpecificMapProvider");
+    providerClass._implements(providerInterface);
+
+    // Implement getMap
+    JMethod getMap = providerClass.method(JMod.PUBLIC, _mapClass.narrow(String.class, Object.class), "getMap");
+    getMap.annotate(Override.class);
+    getMap.body()._return(JExpr._new(specificMapClass));
+
+    // Implement getMap with capacity
+    JMethod getMapWithCapacity = providerClass.method(JMod.PUBLIC, _mapClass.narrow(String.class, Object.class), "getMap");
+    getMapWithCapacity.annotate(Override.class);
+    JVar capacity = getMapWithCapacity.param(getCodeModel().INT, "__capacity");
+    getMapWithCapacity.body()._return(JExpr._new(specificMapClass).arg(capacity));
+
+    // Implement getChild
+    JMethod getChild = providerClass.method(JMod.PUBLIC, providerInterface, "getChild");
+    getChild.annotate(Override.class);
+    getChild.param(_stringClass, "__key");
+    if (valueDataClass != null && (valueDataClass.equals(_dataMapClass) || valueDataClass.equals(_dataListClass)))
+    {
+      getChild.body()._return(valueClass.staticRef("SPECIFIC_DATA_COMPLEX_PROVIDER"));
+    }
+    else
+    {
+      getChild.body()._return(providerInterface.staticRef("DEFAULT"));
+    }
+
+    return providerClass;
+  }
+
+  private JClass generateSpecificMapProvider(JDefinedClass cls,
+      Map<String, JVar> fieldMap,
+      Map<String, JType> fieldDataClassMap,
+      JClass specificMapClass) throws JClassAlreadyExistsException
+  {
+    final JClass providerInterface = getCodeModel().ref(SpecificDataComplexProvider.class);
+    final JDefinedClass providerClass = cls._class(JMod.PRIVATE | JMod.STATIC, "SpecificMapProvider");
+    providerClass._implements(providerInterface);
+
+    // Implement getMap
+    JMethod getMap = providerClass.method(JMod.PUBLIC, _mapClass.narrow(String.class, Object.class), "getMap");
+    getMap.annotate(Override.class);
+    getMap.body()._return(JExpr._new(specificMapClass));
+
+    // Implement getMapWithCapacity
+    JMethod getMapWithCapacity = providerClass.method(JMod.PUBLIC, _mapClass.narrow(String.class, Object.class), "getMap");
+    getMapWithCapacity.annotate(Override.class);
+    getMapWithCapacity.param(getCodeModel().INT, "__capacity");
+    getMapWithCapacity.body()._return(JExpr._new(specificMapClass));
+
+    // Implement getChild
+    JMethod getChild = providerClass.method(JMod.PUBLIC, providerInterface, "getChild");
+    getChild.annotate(Override.class);
+    JVar keyParam = getChild.param(_stringClass, "__key");
+    long dataComplexChildCount = fieldDataClassMap.values().stream().filter(klass ->
+        klass.equals(_dataMapClass) || klass.equals(_dataListClass)).count();
+    if (dataComplexChildCount > 0)
+    {
+      JSwitch keySwitch = getChild.body()._switch(keyParam);
+      fieldMap.forEach((key, value) ->
+      {
+        JType dataClass = fieldDataClassMap.get(key);
+        if (dataClass == null || !(dataClass.equals(_dataMapClass) || dataClass.equals(_dataListClass)))
+        {
+          return;
+        }
+
+        JCase keyCase = keySwitch._case(JExpr.lit(key));
+        keyCase.body()._return(value.type().boxify().staticRef("SPECIFIC_DATA_COMPLEX_PROVIDER"));
+      });
+      keySwitch._default().body()._return(providerClass.staticRef("DEFAULT"));
+    }
+    else
+    {
+      getChild.body()._return(providerInterface.staticRef("DEFAULT"));
+    }
+
+    return providerClass;
+  }
+
+  private JClass generateSpecificMap(JDefinedClass cls,
+      Map<String, JVar> fieldMap,
+      Map<String, JType> fieldDataClassMap,
+      Map<String, JExpression> fieldNameExprMap) throws JClassAlreadyExistsException
+  {
+    final JDefinedClass specificMapClass = cls._class(JMod.PRIVATE | JMod.STATIC, "SpecificMap");
+    specificMapClass._extends(getCodeModel().ref(SpecificDataTemplateSchemaMap.class));
+
+    Map<String, JVar> localVarMap = new HashMap<>(fieldMap.size());
+    Map<String, JVar> localPrimitiveVarMap = new HashMap<>(fieldMap.size());
+    Map<String, JVar> localCoercedVarMap = new HashMap<>(fieldMap.size());
+    Map<String, JVar> localCoercedHasVarMap = new HashMap<>(fieldMap.size());
+    Map<String, JVar> isSchemaTypeVarMap = new HashMap<>(fieldMap.size());
+    fieldMap.forEach((key, value) -> {
+      JFieldVar localVar = specificMapClass.field(JMod.PRIVATE, Object.class, value.name() + "Raw");
+      localVarMap.put(key, localVar);
+
+      JFieldVar localCoercedVar = specificMapClass.field(JMod.PRIVATE, value.type(), value.name() + "Coerced");
+      localCoercedVarMap.put(key, localCoercedVar);
+
+      JType boxedValueType = value.type().boxify();
+      if (!boxedValueType.equals(value.type()))
+      {
+        JFieldVar localCoercedHasVar = specificMapClass.field(JMod.PRIVATE, getCodeModel().BOOLEAN,
+            "_has" + StringUtils.capitalize(value.name()) + "Coerced");
+        localCoercedHasVarMap.put(key, localCoercedHasVar);
+
+        JFieldVar localPrimitiveVar = specificMapClass.field(JMod.PRIVATE, value.type(), value.name() + "PrimitiveRaw");
+        localPrimitiveVarMap.put(key, localPrimitiveVar);
+      }
+
+      JFieldVar isSchemaTypeVar = specificMapClass.field(JMod.PRIVATE, getCodeModel().BOOLEAN,
+          "_isSchemaType" + StringUtils.capitalize(value.name()));
+      isSchemaTypeVarMap.put(key, isSchemaTypeVar);
+    });
+
+    JFieldVar sizeVar = specificMapClass.field(JMod.PRIVATE, getCodeModel().INT, "__size");
+
+    // Generate specificSize
+    JMethod specificSize = specificMapClass.method(JMod.PROTECTED, getCodeModel().INT, "specificSize");
+    specificSize.annotate(Override.class);
+    specificSize.body()._return(sizeVar);
+
+    // Generate specificContainsValue
+    JMethod specificContainsValue = specificMapClass.method(JMod.PROTECTED, getCodeModel().BOOLEAN, "specificContainsValue");
+    specificContainsValue.annotate(Override.class);
+    JVar valueParam = specificContainsValue.param(Object.class, "__value");
+    localVarMap.forEach((key, value) -> {
+      JVar localPrimitiveVar = localPrimitiveVarMap.get(key);
+      if (localPrimitiveVar != null)
+      {
+        specificContainsValue.body()._if(isSchemaTypeVarMap.get(key).cand(valueParam.ne(JExpr._null())).cand(valueParam.invoke("equals").arg(localPrimitiveVar)))._then()._return(JExpr.lit(true));
+      }
+      specificContainsValue.body()._if(value.ne(JExpr._null()).cand(value.invoke("equals").arg(valueParam)))._then()._return(JExpr.lit(true));
+    });
+    specificContainsValue.body()._return(JExpr.lit(false));
+
+    // Generate specificGet
+    JMethod specificGet = specificMapClass.method(JMod.PROTECTED, Object.class, "specificGet");
+    specificGet.annotate(Override.class);
+    JVar rawKeyParam = specificGet.param(_stringClass, "__key");
+    JSwitch getSwitch = specificGet.body()._switch(rawKeyParam);
+    localVarMap.forEach((key, localVar) -> {
+      JCase keyCase = getSwitch._case(JExpr.lit(key));
+      JVar localPrimitiveVar = localPrimitiveVarMap.get(key);
+      if (localPrimitiveVar != null)
+      {
+        keyCase.body()._return(JOp.cond(isSchemaTypeVarMap.get(key), localPrimitiveVar, localVar));
+      }
+      else
+      {
+        keyCase.body()._return(localVar);
+      }
+    });
+    getSwitch._default().body()._return(JExpr._null());
+
+    // Generate specificPut
+    JMethod specificPut = specificMapClass.method(JMod.PROTECTED, Object.class, "specificPut");
+    specificPut.annotate(Override.class);
+    JVar keyParam = specificPut.param(String.class, "__key");
+    JVar putValueParam = specificPut.param(Object.class, "__value");
+    JSwitch putSwitch = specificPut.body()._switch(keyParam);
+    localVarMap.forEach((key, localVar) -> {
+      JCase keyCase = putSwitch._case(JExpr.lit(key));
+      JVar localPrimitiveVar = localPrimitiveVarMap.get(key);
+      JVar previous;
+      if (localPrimitiveVar != null)
+      {
+        previous = keyCase.body().decl(getCodeModel().ref(Object.class), "__previous__", JOp.cond(isSchemaTypeVarMap.get(key), localPrimitiveVar, localVar));
+      }
+      else
+      {
+        previous = keyCase.body().decl(getCodeModel().ref(Object.class), "__previous__", localVar);
+      }
+
+      JType dataClass = fieldDataClassMap.get(key);
+      JVar isSchemaTypeVar = isSchemaTypeVarMap.get(key);
+      JVar coercedVar = localCoercedVarMap.get(key);
+      JVar hasCoercedVar = localCoercedHasVarMap.get(key);
+      if (dataClass != null)
+      {
+        keyCase.body().assign(isSchemaTypeVar, putValueParam._instanceof(dataClass));
+      }
+      else
+      {
+        keyCase.body().assign(isSchemaTypeVar, JExpr.lit(true));
+      }
+
+      if (localPrimitiveVar != null)
+      {
+        JConditional isSameSchemaType = keyCase.body()._if(isSchemaTypeVar);
+        isSameSchemaType._then().assign(localPrimitiveVar, JExpr.cast(localPrimitiveVar.type(), putValueParam));
+        isSameSchemaType._then().assign(localVar, JExpr._null());
+        isSameSchemaType._then().assign(hasCoercedVar, JExpr.lit(true));
+        isSameSchemaType._then().assign(coercedVar, localPrimitiveVar);
+        isSameSchemaType._else().assign(localPrimitiveVar, getDefaultPrimitiveExpression(localPrimitiveVar.type()));
+        isSameSchemaType._else().assign(localVar, putValueParam);
+        isSameSchemaType._else().assign(hasCoercedVar, JExpr.lit(false));
+        isSameSchemaType._else().assign(coercedVar, localPrimitiveVar);
+      }
+      else
+      {
+        keyCase.body().assign(localVar, putValueParam);
+        keyCase.body().assign(coercedVar, JExpr._null());
+      }
+
+      keyCase.body()._if(previous.eq(JExpr._null()))._then().assignPlus(sizeVar, JExpr.lit(1));
+      keyCase.body()._return(previous);
+    });
+    JBlock defaultBlock = putSwitch._default().body();
+    defaultBlock._return(getCodeModel().ref(SpecificDataTemplateSchemaMap.class).staticRef("EXTRA_FIELD"));
+
+    // Generate specificRemove
+    JMethod specificRemove = specificMapClass.method(JMod.PROTECTED, Object.class, "specificRemove");
+    specificRemove.annotate(Override.class);
+    rawKeyParam = specificRemove.param(_stringClass, "__key");
+    JSwitch removeSwitch = specificRemove.body()._switch(rawKeyParam);
+    localVarMap.forEach((key, localVar) -> {
+      JCase keyCase = removeSwitch._case(JExpr.lit(key));
+      JVar localPrimitiveVar = localPrimitiveVarMap.get(key);
+      JVar previous;
+      if (localPrimitiveVar != null)
+      {
+        previous = keyCase.body().decl(getCodeModel().ref(Object.class), "__previous__", JOp.cond(isSchemaTypeVarMap.get(key), localPrimitiveVar, localVar));
+        keyCase.body().assign(localPrimitiveVar, getDefaultPrimitiveExpression(localPrimitiveVar.type()));
+      }
+      else
+      {
+        previous = keyCase.body().decl(getCodeModel().ref(Object.class), "__previous__", localVar);
+      }
+
+      keyCase.body().assign(localVar, JExpr._null());
+      keyCase.body().assign(isSchemaTypeVarMap.get(key), JExpr.lit(false));
+
+      JVar coercedVar = localCoercedVarMap.get(key);
+      JVar hasCoercedVar = localCoercedHasVarMap.get(key);
+      if (hasCoercedVar != null)
+      {
+        keyCase.body().assign(coercedVar, getDefaultPrimitiveExpression(coercedVar.type()));
+        keyCase.body().assign(hasCoercedVar, JExpr.lit(false));
+      }
+      else
+      {
+        keyCase.body().assign(coercedVar, JExpr._null());
+      }
+
+      keyCase.body()._if(previous.ne(JExpr._null()))._then().assignPlus(sizeVar, JExpr.lit(-1));
+      keyCase.body()._return(previous);
+    });
+    defaultBlock = removeSwitch._default().body();
+    defaultBlock._return(getCodeModel().ref(SpecificDataTemplateSchemaMap.class).staticRef("EXTRA_FIELD"));
+
+    // Generate specificClear
+    JMethod specificClear = specificMapClass.method(JMod.PROTECTED, getCodeModel().VOID, "specificClear");
+    specificClear.annotate(Override.class);
+    localVarMap.forEach((key, value) -> {
+      specificClear.body().assign(value, JExpr._null());
+      specificClear.body().assign(isSchemaTypeVarMap.get(key), JExpr.lit(false));
+
+      JVar localPrimitiveVar = localPrimitiveVarMap.get(key);
+      if (localPrimitiveVar != null)
+      {
+        specificClear.body().assign(localPrimitiveVar, getDefaultPrimitiveExpression(localPrimitiveVar.type()));
+      }
+
+      JVar coercedVar = localCoercedVarMap.get(key);
+      JVar hasCoercedVar = localCoercedHasVarMap.get(key);
+      if (hasCoercedVar != null)
+      {
+        specificClear.body().assign(coercedVar, getDefaultPrimitiveExpression(coercedVar.type()));
+        specificClear.body().assign(hasCoercedVar, JExpr.lit(false));
+      }
+      else
+      {
+        specificClear.body().assign(coercedVar, JExpr._null());
+      }
+    });
+    specificClear.body().assign(sizeVar, JExpr.lit(0));
+
+    // Generate specificNextEntry
+    JClass entryClass = getCodeModel().ref(Map.Entry.class).narrow(String.class, Object.class);
+    JMethod specificNextEntry = specificMapClass.method(JMod.PROTECTED, entryClass, "specificNextEntry");
+    JVar currentEntryParam = specificNextEntry.param(entryClass, "__currentEntry__");
+    JVar foundVar = specificNextEntry.body().decl(getCodeModel().BOOLEAN, "__found", currentEntryParam.eq(JExpr._null()));
+    localVarMap.forEach((key, value) -> {
+      JBlock ifBlock;
+      JVar localPrimitiveVar = localPrimitiveVarMap.get(key);
+      JExpression valueExpr;
+      if (localPrimitiveVar != null)
+      {
+        ifBlock = specificNextEntry.body()._if(isSchemaTypeVarMap.get(key).cor(value.ne(JExpr._null())))._then();
+        valueExpr = JOp.cond(isSchemaTypeVarMap.get(key), localPrimitiveVar, value);
+      }
+      else
+      {
+        ifBlock = specificNextEntry.body()._if(value.ne(JExpr._null()))._then();
+        valueExpr = value;
+      }
+      ifBlock._if(foundVar)._then()._return(JExpr._new(
+          getCodeModel().ref(SpecificDataTemplateSchemaMap.SpecificMapEntry.class))
+          .arg(fieldNameExprMap.get(key)).arg(valueExpr).arg(JExpr._this()));
+
+      ifBlock.assign(foundVar, fieldNameExprMap.get(key).invoke("equals").arg(currentEntryParam.invoke("getKey")));
+    });
+    specificNextEntry.body()._return(JExpr._null());
+
+    // Generate specificForEach
+    JMethod specificForEach = specificMapClass.method(JMod.PROTECTED, getCodeModel().VOID, "specificForEach");
+    JVar actionParam = specificForEach.param(getCodeModel().ref(BiConsumer.class).narrow(String.class, Object.class), "__action");
+    localVarMap.forEach((key, value) -> {
+
+      JVar localPrimitiveVar = localPrimitiveVarMap.get(key);
+      JExpression condition;
+      JExpression valueExpr;
+      if (localPrimitiveVar != null)
+      {
+        condition = isSchemaTypeVarMap.get(key).cor(value.ne(JExpr._null()));
+        valueExpr = JOp.cond(isSchemaTypeVarMap.get(key), localPrimitiveVar, value);
+      }
+      else
+      {
+        condition = value.ne(JExpr._null());
+        valueExpr = value;
+      }
+
+      specificForEach.body()
+          ._if(condition)
+          ._then()
+          .invoke(actionParam, "accept").arg(fieldNameExprMap.get(key)).arg(valueExpr);
+    });
+
+    // Generate specificTraverse
+    JMethod specificTraverse = specificMapClass.method(JMod.PROTECTED, getCodeModel().VOID, "specificTraverse");
+    JVar callbackParam = specificTraverse.param(getCodeModel().ref(Data.TraverseCallback.class), "__callback");
+    JVar cycleCheckerParam = specificTraverse.param(getCodeModel().ref(Data.CycleChecker.class), "__cycleChecker");
+    specificTraverse._throws(IOException.class);
+    localVarMap.forEach((key, value) -> {
+      JVar localPrimitiveVar = localPrimitiveVarMap.get(key);
+      JExpression condition;
+      if (localPrimitiveVar != null)
+      {
+        condition = isSchemaTypeVarMap.get(key).cor(value.ne(JExpr._null()));
+      }
+      else
+      {
+        condition = value.ne(JExpr._null());
+      }
+
+      JBlock notNull = specificTraverse.body()._if(condition)._then();
+      notNull.add(callbackParam.invoke("key").arg(fieldNameExprMap.get(key)));
+      addCallbackInvocation(notNull, isSchemaTypeVarMap.get(key), fieldDataClassMap.get(key), value, localPrimitiveVar, callbackParam, cycleCheckerParam);
+    });
+
+    // Generate specificCopy
+    JMethod specificCopy = specificMapClass.method(JMod.PROTECTED, getCodeModel().ref(SpecificDataTemplateSchemaMap.class), "specificCopy");
+    specificCopy._throws(CloneNotSupportedException.class);
+    JVar copyVar = specificCopy.body().decl(specificMapClass, "__copy", JExpr._new(specificMapClass));
+    localVarMap.forEach((key, value) -> {
+      specificCopy.body().assign(copyVar.ref(value.name()), JExpr.invoke("copy").arg(value));
+      JVar localPrimitiveVar = localPrimitiveVarMap.get(key);
+      if (localPrimitiveVar != null)
+      {
+        specificCopy.body().assign(copyVar.ref(localPrimitiveVar.name()), localPrimitiveVar);
+      }
+      JVar isSchemaTypeVar = isSchemaTypeVarMap.get(key);
+      specificCopy.body().assign(copyVar.ref(isSchemaTypeVar.name()), isSchemaTypeVar);
+    });
+    specificCopy.body().assign(copyVar.ref(sizeVar.name()), sizeVar);
+    specificCopy.body()._return(copyVar);
+
+    return specificMapClass;
+  }
+
+  private void addCallbackInvocation(JBlock block, JVar isSchemaTypeValue, JType dataClassType, JVar value,
+      JVar primitiveValue, JVar callbackParam, JVar cycleCheckerParam)
+  {
+    if (dataClassType == null)
+    {
+      block.staticInvoke(getCodeModel().ref(Data.class), "traverse").arg(value).arg(callbackParam).arg(cycleCheckerParam);
+      return;
+    }
+
+    JConditional schemaMatch = block._if(isSchemaTypeValue);
+    JExpression castVar;
+
+    if (primitiveValue != null)
+    {
+      castVar = primitiveValue;
+    }
+    else
+    {
+      castVar = JExpr.cast(dataClassType, value);
+    }
+
+    switch (dataClassType.fullName())
+    {
+      case "java.lang.String":
+        schemaMatch._then().invoke(callbackParam, "stringValue").arg(castVar);
+        break;
+      case "java.lang.Integer":
+        schemaMatch._then().invoke(callbackParam, "integerValue").arg(castVar);
+        break;
+      case "com.linkedin.data.DataMap":
+      case "com.linkedin.data.DataList":
+        schemaMatch._then().invoke(castVar, "traverse").arg(callbackParam).arg(cycleCheckerParam);
+        break;
+      case "java.lang.Boolean":
+        schemaMatch._then().invoke(callbackParam, "booleanValue").arg(castVar);
+        break;
+      case "java.lang.Long":
+        schemaMatch._then().invoke(callbackParam, "longValue").arg(castVar);
+        break;
+      case "java.lang.Float":
+        schemaMatch._then().invoke(callbackParam, "floatValue").arg(castVar);
+        break;
+      case "java.lang.Double":
+        schemaMatch._then().invoke(callbackParam, "doubleValue").arg(castVar);
+        break;
+      case "com.linkedin.data.ByteString":
+        schemaMatch._then().invoke(callbackParam, "byteStringValue").arg(castVar);
+        break;
+      default:
+        throw new IllegalStateException("Unknown data class name: " + dataClassType.fullName());
+    }
+
+    schemaMatch._else().staticInvoke(getCodeModel().ref(Data.class), "traverse").arg(value).arg(callbackParam).arg(cycleCheckerParam);
+  }
+
   private JExpression getCoerceOutputExpression(JExpression rawExpr, DataSchema schema, JClass typeClass,
-      CustomInfoSpec customInfoSpec)
+      CustomInfoSpec customInfoSpec, boolean isRawExprNonNull)
   {
     if (CodeUtil.isDirectType(schema))
     {
@@ -1529,23 +2551,52 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
     }
     else
     {
+      JExpression returnExpression;
       switch (schema.getDereferencedType())
       {
         case MAP:
         case RECORD:
-          return JOp.cond(rawExpr.eq(JExpr._null()), JExpr._null(), JExpr._new(typeClass)
-              .arg(_dataTemplateUtilClass.staticInvoke("castOrThrow").arg(rawExpr).arg(_dataMapClass.dotclass())));
+          returnExpression = JExpr._new(typeClass)
+              .arg(_dataTemplateUtilClass.staticInvoke("castOrThrow").arg(rawExpr).arg(_dataMapClass.dotclass()));
+          break;
         case ARRAY:
-          return JOp.cond(rawExpr.eq(JExpr._null()), JExpr._null(), JExpr._new(typeClass)
-              .arg(_dataTemplateUtilClass.staticInvoke("castOrThrow").arg(rawExpr).arg(_dataListClass.dotclass())));
+          returnExpression = JExpr._new(typeClass)
+              .arg(_dataTemplateUtilClass.staticInvoke("castOrThrow").arg(rawExpr).arg(_dataListClass.dotclass()));
+          break;
         case FIXED:
         case UNION:
-          return JOp.cond(rawExpr.eq(JExpr._null()), JExpr._null(), JExpr._new(typeClass).arg(rawExpr));
+          returnExpression = JExpr._new(typeClass).arg(rawExpr);
+          break;
         default:
           throw new TemplateOutputCastException(
               "Cannot handle wrapped schema of type " + schema.getDereferencedType());
       }
+
+      return isRawExprNonNull ? returnExpression : JOp.cond(rawExpr.eq(JExpr._null()), JExpr._null(), returnExpression);
     }
+  }
+
+  private JExpression getDefaultPrimitiveExpression(JType type)
+  {
+    if (!type.isPrimitive())
+    {
+      throw new IllegalArgumentException("Type: " + type + " is not a primitive type");
+    }
+
+    if (getCodeModel().INT.equals(type) ||
+        getCodeModel().LONG.equals(type) ||
+        getCodeModel().FLOAT.equals(type) ||
+        getCodeModel().DOUBLE.equals(type))
+    {
+      return JExpr.lit(0);
+    }
+
+    if (getCodeModel().BOOLEAN.equals(type))
+    {
+      return JExpr.lit(false);
+    }
+
+    throw new IllegalArgumentException("Unsupported primitive type: " + type);
   }
 
   private JExpression getCoerceInputExpression(JExpression objectExpr, DataSchema schema, CustomInfoSpec customInfoSpec)
@@ -1557,19 +2608,15 @@ public class JavaDataTemplateGenerator extends JavaCodeGeneratorBase
         switch (schema.getDereferencedType())
         {
           case INT:
-            return _dataTemplateUtilClass.staticInvoke("coerceIntInput").arg(objectExpr);
           case FLOAT:
-            return _dataTemplateUtilClass.staticInvoke("coerceFloatInput").arg(objectExpr);
           case LONG:
-            return _dataTemplateUtilClass.staticInvoke("coerceLongInput").arg(objectExpr);
           case DOUBLE:
-            return _dataTemplateUtilClass.staticInvoke("coerceDoubleInput").arg(objectExpr);
           case BYTES:
           case BOOLEAN:
           case STRING:
             return objectExpr;
           case ENUM:
-            return objectExpr.invoke("name");
+            return objectExpr.invoke("toString");
         }
       }
 

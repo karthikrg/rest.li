@@ -19,6 +19,7 @@ package com.linkedin.data.template;
 
 import com.linkedin.data.DataMap;
 import com.linkedin.data.collections.CheckedMap;
+import com.linkedin.data.collections.SpecificMap;
 import com.linkedin.data.schema.RecordDataSchema;
 
 
@@ -47,6 +48,11 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
 {
   private static final int UNKNOWN_INITIAL_CACHE_CAPACITY = -1;
 
+  protected RecordTemplate(SpecificMap specificMap, RecordDataSchema schema)
+  {
+    this(new DataMap(specificMap), schema, UNKNOWN_INITIAL_CACHE_CAPACITY, specificMap);
+  }
+
   protected RecordTemplate(DataMap map, RecordDataSchema schema)
   {
     this(map, schema, UNKNOWN_INITIAL_CACHE_CAPACITY);
@@ -54,9 +60,15 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
 
   protected RecordTemplate(DataMap map, RecordDataSchema schema, int initialCacheCapacity)
   {
+    this(map, schema, initialCacheCapacity, (map == null) ? null : map.getSpecificMap());
+  }
+
+  private RecordTemplate(DataMap map, RecordDataSchema schema, int initialCacheCapacity, SpecificMap specificMap)
+  {
     _map = map;
     _schema = schema;
     _initialCacheCapacity = initialCacheCapacity;
+    _specificMap = specificMap;
   }
 
   @Override
@@ -72,10 +84,21 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
   }
 
   @Override
+  @SuppressWarnings("unchecked")
   public RecordTemplate clone() throws CloneNotSupportedException
   {
     RecordTemplate clone = (RecordTemplate) super.clone();
-    clone._map = clone._map.clone();
+    if (_specificMap != null)
+    {
+      clone._specificMap = (SpecificMap)_specificMap.clone();
+      clone._map = new DataMap(clone._specificMap);
+    }
+    else
+    {
+      clone._specificMap = null;
+      clone._map = _map.clone();
+    }
+
     clone._cache = clone._cache != null ? clone._cache.clone() : null;
     clone._initialCacheCapacity = _initialCacheCapacity;
     return clone;
@@ -98,7 +121,17 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
   public RecordTemplate copy() throws CloneNotSupportedException
   {
     RecordTemplate copy = (RecordTemplate) super.clone();
-    copy._map = _map.copy();
+    if (_specificMap != null)
+    {
+      copy._specificMap = _specificMap.copy();
+      copy._map = new DataMap(copy._specificMap);
+    }
+    else
+    {
+      copy._specificMap = null;
+      copy._map = _map.copy();
+    }
+
     copy._cache = null;
     return copy;
   }
@@ -516,6 +549,7 @@ public abstract class RecordTemplate implements DataTemplate<DataMap>
   }
 
   protected DataMap _map;
+  protected SpecificMap _specificMap;
   private final RecordDataSchema _schema;
   private int _initialCacheCapacity;
   private DataObjectToObjectCache<Object> _cache;

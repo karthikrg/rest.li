@@ -40,7 +40,7 @@ public class InMemorySymbolTable implements SymbolTable {
 
     for (int i = 0; i < symbols.size(); i++)
     {
-      String symbol = symbols.get(i);
+      String symbol = symbols.get(i).intern();
       _symbolNameToId.put(symbol, i);
       _symbols[i] = symbol;
     }
@@ -49,14 +49,7 @@ public class InMemorySymbolTable implements SymbolTable {
   @Override
   public int getSymbolId(String symbolName)
   {
-
-    Integer symbolId = _symbolNameToId.get(symbolName);
-    if (symbolId != null)
-    {
-      return symbolId;
-    }
-
-    return UNKNOWN_SYMBOL_ID;
+    return _symbolNameToId.getOrDefault(symbolName, UNKNOWN_SYMBOL_ID);
   }
 
   @Override

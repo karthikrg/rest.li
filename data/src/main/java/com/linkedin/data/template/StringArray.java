@@ -16,11 +16,16 @@
 
 package com.linkedin.data.template;
 
+import com.linkedin.data.Data;
 import com.linkedin.data.DataList;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.ArrayDataSchema;
 import com.linkedin.util.ArgumentUtil;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 
 
 /**
@@ -28,21 +33,22 @@ import java.util.Collection;
  */
 public final class StringArray extends DirectArrayTemplate<String>
 {
+  public static final SpecificDataComplexProvider SPECIFIC_DATA_COMPLEX_PROVIDER = new StringArraySpecificDataComplexProvider();
   private static final ArrayDataSchema SCHEMA = (ArrayDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"array\", \"items\" : \"string\" }");
 
   public StringArray()
   {
-    this(new DataList());
+    this(new DataList(new StringSpecificElementArray()));
   }
 
   public StringArray(int initialCapacity)
   {
-    this(new DataList(initialCapacity));
+    this(new DataList(new StringSpecificElementArray(initialCapacity)));
   }
 
   public StringArray(Collection<String> c)
   {
-    this(new DataList(c.size()));
+    this(new DataList(new StringSpecificElementArray(c.size())));
     addAll(c);
   }
 
@@ -53,7 +59,7 @@ public final class StringArray extends DirectArrayTemplate<String>
 
   public StringArray(String first, String... rest)
   {
-    this(new DataList(rest.length + 1));
+    this(new DataList(new StringSpecificElementArray(rest.length + 1)));
     add(first);
     addAll(Arrays.asList(rest));
   }
@@ -82,5 +88,40 @@ public final class StringArray extends DirectArrayTemplate<String>
   {
     assert(object != null);
     return DataTemplateUtil.coerceStringOutput(object);
+  }
+
+  public static class StringSpecificElementArray extends SpecificElementArrayTemplate<String>
+  {
+    public StringSpecificElementArray()
+    {
+      super(String.class);
+    }
+
+    public StringSpecificElementArray(int capacity)
+    {
+      super(capacity, String.class);
+    }
+
+    @Override
+    protected void specificTraverse(String object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      callback.stringValue(object);
+    }
+  }
+
+  private static class StringArraySpecificDataComplexProvider implements SpecificDataComplexProvider
+  {
+    @Override
+    public List<Object> getList()
+    {
+      return new StringSpecificElementArray();
+    }
+
+    @Override
+    public List<Object> getList(int capacity)
+    {
+      return new StringSpecificElementArray(capacity);
+    }
   }
 }

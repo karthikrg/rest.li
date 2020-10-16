@@ -16,6 +16,7 @@
 
 package com.linkedin.data.template;
 
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.DataSchema;
 
 
@@ -28,6 +29,8 @@ import com.linkedin.data.schema.DataSchema;
  */
 public interface DataTemplate<E> extends Cloneable
 {
+  SpecificDataComplexProvider SPECIFIC_DATA_COMPLEX_PROVIDER = SpecificDataComplexProvider.DEFAULT;
+
   /**
    * {@link DataSchema} of this object.
    *

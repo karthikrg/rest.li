@@ -74,7 +74,7 @@ public class DataTemplateUtil
   {
     try
     {
-      return value == null ? null : klass.cast(value);
+      return klass.cast(value);
     }
     catch (ClassCastException e)
     {

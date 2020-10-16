@@ -17,6 +17,7 @@
 package com.linkedin.restli.server;
 
 
+import com.linkedin.data.DataMap;
 import com.linkedin.data.schema.RecordDataSchema;
 import com.linkedin.data.template.DataTemplateUtil;
 import com.linkedin.data.template.RecordTemplate;
@@ -34,6 +35,6 @@ public final class NoMetadata extends RecordTemplate
 
   private NoMetadata()
   {
-    super(null, null);
+    super((DataMap) null, null);
   }
 }

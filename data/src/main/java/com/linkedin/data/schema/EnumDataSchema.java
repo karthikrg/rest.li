@@ -17,6 +17,8 @@
 package com.linkedin.data.schema;
 
 
+import com.linkedin.data.DataMapBuilder;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -50,7 +52,8 @@ public final class EnumDataSchema extends NamedDataSchema
     boolean ok = true;
     if (symbols != null)
     {
-      Map<String, Integer> map = new HashMap<String, Integer>();
+      Map<String, Integer> map = new HashMap<>(DataMapBuilder.getOptimumHashMapCapacityFromSize(symbols.size()));
+      List<String> internedSymbols = new ArrayList<>(symbols.size());
       int index = 0;
       for (String symbol : symbols)
       {
@@ -67,11 +70,13 @@ public final class EnumDataSchema extends NamedDataSchema
         }
         else
         {
-          map.put(symbol, index);
+          String internedSymbol = symbol.intern();
+          internedSymbols.add(internedSymbol);
+          map.put(internedSymbol, index);
         }
         index++;
       }
-      _symbols = Collections.unmodifiableList(symbols);
+      _symbols = Collections.unmodifiableList(internedSymbols);
       _symbolToIndexMap = Collections.unmodifiableMap(map);
     }
     if (ok == false)

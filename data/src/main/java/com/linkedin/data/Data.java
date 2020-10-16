@@ -103,7 +103,7 @@ import java.util.stream.Collectors;
 public class Data
 {
   /**
-   * Placeholder object populated inside {@link DataList#_isTraversing} or {@link DataMap#_isTraversing} by the
+   * Placeholder object populated inside {@link DataList#isTraversing()} or {@link DataMap#isTraversing()} by the
    * default implementation of {@link CycleChecker} to indicate that the given {@link DataList} or {@link DataMap}
    * is being traversed.
    */
@@ -203,43 +203,43 @@ public class Data
   }
 
   /**
-   * The default {@link CycleChecker} implementation that leverages {@link DataList#_isTraversing} and
-   * {@link DataMap#_isTraversing} to detect cycles.
+   * The default {@link CycleChecker} implementation that leverages {@link DataList#isTraversing()} and
+   * {@link DataMap#isTraversing()} to detect cycles.
    */
   private static class DefaultCycleChecker implements CycleChecker
   {
     @Override
     public void startMap(DataMap map) throws IOException
     {
-      if (map._isTraversing.get() == TRAVERSAL_INDICATOR)
+      if (map.isTraversing() == TRAVERSAL_INDICATOR)
       {
         throw new IOException("Cycle detected!");
       }
 
-      map._isTraversing.set(TRAVERSAL_INDICATOR);
+      map.setTraversing(TRAVERSAL_INDICATOR);
     }
 
     @Override
     public void endMap(DataMap map) throws IOException
     {
-      map._isTraversing.set(null);
+      map.setTraversing(null);
     }
 
     @Override
     public void startList(DataList list) throws IOException
     {
-      if (list._isTraversing.get() == TRAVERSAL_INDICATOR)
+      if (list.isTraversing() == TRAVERSAL_INDICATOR)
       {
         throw new IOException("Cycle detected!");
       }
 
-      list._isTraversing.set(TRAVERSAL_INDICATOR);
+      list.setTraversing(TRAVERSAL_INDICATOR);
     }
 
     @Override
     public void endList(DataList list) throws IOException
     {
-      list._isTraversing.set(null);
+      list.setTraversing(null);
     }
   }
 
@@ -455,9 +455,9 @@ public class Data
    * @param callback to receive parse events.
    * @param cycleChecker to detect cycles when processing the object
    */
-  private static void traverse(Object obj, TraverseCallback callback, CycleChecker cycleChecker) throws IOException
+  public static void traverse(Object obj, TraverseCallback callback, CycleChecker cycleChecker) throws IOException
   {
-    if (obj == null || obj == Data.NULL)
+    if (obj == null)
     {
       callback.nullValue();
       return;
@@ -466,6 +466,9 @@ public class Data
     // We intentionally use a string switch here for performance.
     switch (obj.getClass().getName())
     {
+      case "com.linkedin.data.Null":
+        callback.nullValue();
+        return;
       case "java.lang.String":
         callback.stringValue((String) obj);
         return;
@@ -475,119 +478,13 @@ public class Data
       case "com.linkedin.data.DataMap":
       {
         DataMap map = (DataMap) obj;
-        if (map.isEmpty())
-        {
-          callback.emptyMap();
-        }
-        else
-        {
-          try
-          {
-            cycleChecker.startMap(map);
-            callback.startMap(map);
-            Iterable<Map.Entry<String, Object>> orderedEntrySet = callback.orderMap(map);
-
-            //
-            // If the ordered entry set is null, use Java 8 forEach to avoid intermediary object
-            // creation for better performance.
-            //
-            if (orderedEntrySet == null)
-            {
-              try
-              {
-                map.forEach((key, value) ->
-                {
-                  try
-                  {
-                    callback.key(key);
-                    traverse(value, callback, cycleChecker);
-                  }
-                  catch (IOException e)
-                  {
-                    throw new IllegalStateException(e);
-                  }
-                });
-              }
-              catch (IllegalStateException e)
-              {
-                if (e.getCause() instanceof IOException)
-                {
-                  throw (IOException) e.getCause();
-                }
-                else
-                {
-                  throw new IOException(e);
-                }
-              }
-            }
-            else
-            {
-              for (Map.Entry<String, Object> entry : orderedEntrySet)
-              {
-                callback.key(entry.getKey());
-                traverse(entry.getValue(), callback, cycleChecker);
-              }
-            }
-
-            callback.endMap();
-          }
-          finally
-          {
-            cycleChecker.endMap(map);
-          }
-        }
+        map.traverse(callback, cycleChecker);
         return;
       }
       case "com.linkedin.data.DataList":
       {
         DataList list = (DataList) obj;
-        if (list.isEmpty())
-        {
-          callback.emptyList();
-        }
-        else
-        {
-          try
-          {
-            cycleChecker.startList(list);
-            callback.startList(list);
-
-            // Use Java 8 forEach to minimize intermediary object creation for better performance.
-            final int[] index = {0};
-            try
-            {
-              list.forEach((element) ->
-              {
-                try
-                {
-                  callback.index(index[0]);
-                  traverse(element, callback, cycleChecker);
-                  index[0]++;
-                }
-                catch (IOException e)
-                {
-                  throw new IllegalStateException(e);
-                }
-              });
-            }
-            catch (IllegalStateException e)
-            {
-              if (e.getCause() instanceof IOException)
-              {
-                throw (IOException) e.getCause();
-              }
-              else
-              {
-                throw new IOException(e);
-              }
-            }
-            callback.endList();
-          }
-          finally
-          {
-            cycleChecker.endList(list);
-          }
-        }
+        list.traverse(callback, cycleChecker);
         return;
       }
       case "java.lang.Boolean":
@@ -959,7 +856,7 @@ public class Data
    * @param o is the object to check.
    * @return true if the object is a complex object.
    */
-  static boolean isComplex(Object o)
+  public static boolean isComplex(Object o)
   {
     return isComplexClass(o.getClass());
   }

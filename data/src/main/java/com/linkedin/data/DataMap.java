@@ -18,6 +18,8 @@ package com.linkedin.data;
 
 import com.linkedin.data.collections.CheckedMap;
 import com.linkedin.data.collections.MapChecker;
+import com.linkedin.data.collections.SpecificMap;
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -110,17 +112,61 @@ public final class DataMap extends CheckedMap<String,Object> implements DataComp
     super(initialCapacity, loadFactor, _checker);
   }
 
+  /**
+   * Constructs a {@link DataMap} backed by the given specific map.
+   *
+   * <p>This constructor is meant to be invoked only from code-generated models.</p>
+   *
+   * @param specificMap provides the specific map.
+   *
+   * @see HashMap
+   */
+  public DataMap(SpecificMap specificMap)
+  {
+    super(specificMap, _checker, false);
+    _encapsulatesSpecificMap = true;
+  }
+
+  /**
+   * Constructs a {@link DataMap} backed by the given map without copying.
+   *
+   * <p>This constructor is meant to be invoked only from codecs.</p>
+   *
+   * @param map provides the map.
+   */
+  public DataMap(Map<String, Object> map, boolean noCopyPlaceholder)
+  {
+    super(map, _checker, noCopyPlaceholder);
+    _encapsulatesSpecificMap = (map instanceof SpecificMap);
+  }
+
   @Override
+  @SuppressWarnings("unchecked")
   public DataMap clone() throws CloneNotSupportedException
   {
     DataMap o = (DataMap) super.clone();
+    o._encapsulatesSpecificMap = _encapsulatesSpecificMap;
     o._madeReadOnly = false;
     o._instrumented = false;
     o._accessMap = null;
     o._dataComplexHashCode = 0;
-    o._isTraversing = new ThreadLocal<>();
+    o._isTraversing = null;
 
     return o;
+  }
+
+  @Override
+  @SuppressWarnings("unchecked")
+  protected Map<String, Object> cloneMap(Map<String, Object> input) throws CloneNotSupportedException
+  {
+    if (input instanceof SpecificMap)
+    {
+      return (Map<String, Object>) ((SpecificMap) input).clone();
+    }
+    else
+    {
+      return super.cloneMap(input);
+    }
   }
 
   @Override
@@ -407,6 +453,80 @@ public final class DataMap extends CheckedMap<String,Object> implements DataComp
     return _dataComplexHashCode;
   }
 
+  public void traverse(Data.TraverseCallback callback, Data.CycleChecker cycleChecker) throws IOException
+  {
+    if (isEmpty())
+    {
+      callback.emptyMap();
+      return;
+    }
+
+    try
+    {
+      cycleChecker.startMap(this);
+      callback.startMap(this);
+      Iterable<Map.Entry<String, Object>> orderedEntrySet = callback.orderMap(this);
+
+      //
+      // If the ordered entry set is null, then it means that we don't care about traversal order.
+      //
+      if (orderedEntrySet == null)
+      {
+        //
+        // If this is backed by a specific map, delegate traversal to the specific map. Else, use Java 8 forEach
+        // to avoid intermediary object creation.
+        //
+        if (_encapsulatesSpecificMap)
+        {
+          ((SpecificMap) _map).traverse(callback, cycleChecker);
+        }
+        else
+        {
+          try
+          {
+            forEach((key, value) ->
+            {
+              try
+              {
+                callback.key(key);
+                Data.traverse(value, callback, cycleChecker);
+              }
+              catch (IOException e)
+              {
+                throw new IllegalStateException(e);
+              }
+            });
+          }
+          catch (IllegalStateException e)
+          {
+            if (e.getCause() instanceof IOException)
+            {
+              throw (IOException) e.getCause();
+            }
+            else
+            {
+              throw new IOException(e);
+            }
+          }
+        }
+      }
+      else
+      {
+        for (Map.Entry<String, Object> entry : orderedEntrySet)
+        {
+          callback.key(entry.getKey());
+          Data.traverse(entry.getValue(), callback, cycleChecker);
+        }
+      }
+
+      callback.endMap();
+    }
+    finally
+    {
+      cycleChecker.endMap(this);
+    }
+  }
+
   // Unit test use only
   void disableChecker()
   {
@@ -436,16 +556,47 @@ public final class DataMap extends CheckedMap<String,Object> implements DataComp
     Data.checkAllowed((DataComplex) map, value);
   };
 
+  Object isTraversing()
+  {
+    return getOrCreateIsTraversing().get();
+  }
+
+  void setTraversing(Object value)
+  {
+    getOrCreateIsTraversing().set(value);
+  }
+
+  private ThreadLocal<Object> getOrCreateIsTraversing()
+  {
+    if (_isTraversing == null)
+    {
+      synchronized (this)
+      {
+        if (_isTraversing == null)
+        {
+          _isTraversing = new ThreadLocal<>();
+        }
+      }
+    }
+
+    return _isTraversing;
+  }
+
+  public SpecificMap getSpecificMap()
+  {
+    return _encapsulatesSpecificMap ? (SpecificMap) _map : null;
+  }
+
   /**
    * Indicates if this {@link DataMap} is currently being traversed by a {@link Data.TraverseCallback} if this value is
    * not null, or not if this value is null. This is internally marked package private, used for cycle detection and
    * not meant for use by external callers. This is maintained as a {@link ThreadLocal} to allow for concurrent
    * traversals of the same {@link DataMap} from multiple threads.
    */
-  ThreadLocal<Object> _isTraversing = new ThreadLocal<>();
-
+  private ThreadLocal<Object> _isTraversing;
   private boolean _madeReadOnly = false;
   private boolean _instrumented = false;
   private Map<String, Integer> _accessMap;
+  private boolean _encapsulatesSpecificMap = false;
   int _dataComplexHashCode = 0;
 }

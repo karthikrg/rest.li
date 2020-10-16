@@ -18,6 +18,7 @@ package com.linkedin.data.template;
 
 
 import com.linkedin.data.DataMap;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.MapDataSchema;
 import java.util.AbstractMap;
@@ -291,9 +292,14 @@ public abstract class AbstractMapTemplate<V> extends AbstractMap<String ,V> impl
 
   protected static DataMap newDataMapOfSize(int srcMapSize)
   {
+    return new DataMap(capacityFromSize(srcMapSize), 0.75f);
+  }
+
+  protected static int capacityFromSize(int srcMapSize)
+  {
     // This is not using the common initial capacity calculation in Pegasus-Common
     // in order not to depend on an extra jar.
-    return new DataMap((int)(srcMapSize / 0.75f) + 1, 0.75f);
+    return (int)(srcMapSize / 0.75f) + 1;
   }
 
   protected DataMap _map;

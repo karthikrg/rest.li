@@ -16,13 +16,17 @@
 
 package com.linkedin.data.template;
 
+import com.linkedin.data.Data;
 import com.linkedin.data.DataList;
-import com.linkedin.data.DataMapBuilder;
+import com.linkedin.data.DataMap;
 import com.linkedin.data.collections.CheckedUtil;
 import com.linkedin.data.schema.ArrayDataSchema;
 import com.linkedin.data.schema.DataSchema;
 import com.linkedin.util.ArgumentUtil;
+import com.linkedin.util.Lazy;
+import java.io.IOException;
 import java.lang.reflect.Constructor;
+import java.util.Arrays;
 
 
 /**
@@ -42,8 +46,23 @@ public class WrappingArrayTemplate<E extends DataTemplate<?>> extends AbstractAr
   protected WrappingArrayTemplate(DataList list, ArrayDataSchema schema, Class<E> elementClass)
       throws TemplateOutputCastException
   {
-    super(list, schema, elementClass, DataTemplateUtil.getDataClass(schema.getItems()));
-    _cache = new DataObjectToObjectCache<>(DataMapBuilder.getOptimumHashMapCapacityFromSize(list.size()));
+    this(list, schema, elementClass, DataTemplateUtil.getDataClass(schema.getItems()));
+  }
+
+  /**
+   * Constructor.
+   *
+   * @param list is the underlying {@link DataList} that will be proxied by this {@link WrappingArrayTemplate}.
+   * @param schema is the {@link DataSchema} of the array.
+   * @param elementClass is the class of elements returned by this {@link WrappingArrayTemplate}.
+   * @param elementDataClass is the class of raw data of elements returned by this {@link WrappingArrayTemplate}.
+   */
+  protected WrappingArrayTemplate(DataList list, ArrayDataSchema schema, Class<E> elementClass, Class<?> elementDataClass)
+      throws TemplateOutputCastException
+  {
+    super(list, schema, elementClass, elementDataClass);
+    final int size = list.size();
+    _cache = new Lazy<>(() -> new DataListCache<>(size));
   }
 
   @Override
@@ -64,7 +83,7 @@ public class WrappingArrayTemplate<E extends DataTemplate<?>> extends AbstractAr
   @Override
   public E get(int index) throws TemplateOutputCastException
   {
-    return cacheLookup(_list.get(index), index);
+    return cacheLookup(_list.get(index), index, false);
   }
 
   @Override
@@ -72,7 +91,7 @@ public class WrappingArrayTemplate<E extends DataTemplate<?>> extends AbstractAr
   {
     Object removed = _list.remove(index);
     modCount++;
-    return cacheLookup(removed, -1);
+    return cacheLookup(removed, index, true);
   }
 
   @Override
@@ -87,23 +106,22 @@ public class WrappingArrayTemplate<E extends DataTemplate<?>> extends AbstractAr
   {
     Object replaced = CheckedUtil.setWithoutChecking(_list, index, unwrap(element));
     modCount++;
-    return cacheLookup(replaced, -1);
+    return cacheLookup(replaced, index, true);
   }
 
   @Override
   public WrappingArrayTemplate<E> clone() throws CloneNotSupportedException
   {
     WrappingArrayTemplate<E> clone = (WrappingArrayTemplate<E>) super.clone();
-    clone._cache = clone._cache.clone();
+    clone._cache = new Lazy<>(clone._cache.get().clone());
     return clone;
   }
 
   @Override
   public WrappingArrayTemplate<E> copy() throws CloneNotSupportedException
   {
-    @SuppressWarnings("unchecked")
     WrappingArrayTemplate<E> copy = (WrappingArrayTemplate<E>) super.copy();
-    copy._cache = new DataObjectToObjectCache<E>(copy.data().size());
+    copy._cache = new Lazy<>(() -> new DataListCache<>(size()));
     return copy;
   }
 
@@ -136,23 +154,21 @@ public class WrappingArrayTemplate<E extends DataTemplate<?>> extends AbstractAr
    * create a {@link DataTemplate} for the Data object and add it to the cache.
    *
    * @param object is the Data object.
-   * @param index of the Data object in the underlying {@link DataList},
-   *        if index is -1, then the Data object is being removed
-   *        from the underlying {@link DataList}.
+   * @param index of the Data object in the underlying {@link DataList}.
+   * @param removeExisting remove the element at the existing index from the backing cache.
+   *
    * @return the {@link DataTemplate} that proxies the Data object.
    * @throws TemplateOutputCastException if the object cannot be wrapped.
    */
-  protected E cacheLookup(Object object, int index) throws TemplateOutputCastException
+  protected E cacheLookup(Object object, int index, boolean removeExisting) throws TemplateOutputCastException
   {
     E wrapped;
     assert(object != null);
-    if ((wrapped = _cache.get(object)) == null || wrapped.data() != object)
+    DataListCache<E> cache = _cache.get();
+    if ((wrapped = cache.get(index)) == null || wrapped.data() != object)
     {
       wrapped = coerceOutput(object);
-      if (index != -1)
-      {
-        _cache.put(object, wrapped);
-      }
+      cache.put(index, (removeExisting ? null : wrapped));
     }
     return wrapped;
   }
@@ -168,6 +184,90 @@ public class WrappingArrayTemplate<E extends DataTemplate<?>> extends AbstractAr
   }
 
   private Constructor<E> _constructor;
-  protected DataObjectToObjectCache<E> _cache;
+  protected Lazy<DataListCache<E>> _cache;
+
+  public static class DataMapSpecificElementArray extends SpecificElementArrayTemplate<DataMap>
+  {
+    public DataMapSpecificElementArray()
+    {
+      super(DataMap.class);
+    }
+
+    public DataMapSpecificElementArray(int capacity)
+    {
+      super(capacity, DataMap.class);
+    }
+
+    @Override
+    protected void specificTraverse(DataMap object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      object.traverse(callback, cycleChecker);
+    }
+  }
+
+  public static class DataListSpecificElementArray extends SpecificElementArrayTemplate<DataList>
+  {
+    public DataListSpecificElementArray()
+    {
+      super(DataList.class);
+    }
+
+    public DataListSpecificElementArray(int capacity)
+    {
+      super(capacity, DataList.class);
+    }
+
+    @Override
+    protected void specificTraverse(DataList object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      object.traverse(callback, cycleChecker);
+    }
+  }
+
+  private static class DataListCache<E>
+  {
+    private E[] _list;
+
+    @SuppressWarnings("unchecked")
+    public DataListCache(int size)
+    {
+      _list = (E[]) new Object[size];
+    }
+
+    private DataListCache(E[] list)
+    {
+      _list = list;
+    }
+
+    public E get(int index)
+    {
+      if (index < 0 || index >= _list.length)
+      {
+        return null;
+      }
+
+      return _list[index];
+    }
+
+    @SuppressWarnings("unchecked")
+    public void put(int index, E value)
+    {
+      if (index >= _list.length)
+      {
+        // Grow generously to avoid frequent resizing.
+        E[] newList = (E[]) new Object[Math.max(index * 2, 2)];
+        System.arraycopy(_list, 0, newList, 0, _list.length);
+        _list = newList;
+      }
+      _list[index] = value;
+    }
+
+    public DataListCache<E> clone() throws CloneNotSupportedException
+    {
+      return new DataListCache<>(Arrays.copyOf(_list, _list.length));
+    }
+  }
 }
 

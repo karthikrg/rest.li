@@ -47,7 +47,7 @@
 package com.linkedin.data.protobuf;
 
 import java.io.Closeable;
-import java.io.EOFException;
+import java.io.Flushable;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.function.Function;
@@ -60,21 +60,69 @@ public class ProtoWriter implements Closeable
 {
   public static final int FIXED32_SIZE = 4;
   public static final int FIXED64_SIZE = 8;
-  private static final int MAX_VARINT32_SIZE = 5;
-  private static final int MAX_VARINT64_SIZE = 10;
-  private static final int DEFAULT_BUFFER_SIZE = 4096;
+  public static final int MAX_VARINT32_SIZE = 5;
+  public static final int MAX_VARINT64_SIZE = 10;
 
-  private final OutputStream _out;
-  private final byte[] _buffer;
-  private final int _limit;
-  private int _position;
+  private final DataWriter _dataWriter;
+
+  /**
+   * Underlying writer to write data to different kinds of sinks.
+   */
+  public interface DataWriter extends Flushable, Closeable
+  {
+    /**
+     * Write a single byte.
+     */
+    void writeByte(final byte value) throws IOException;
+
+    /**
+     * Write a fixed length 32-bit signed integer.
+     */
+    void writeFixedInt32(final int value) throws IOException;
+
+    /**
+     * Write a fixed length 64-bit signed integer.
+     */
+    void writeFixedInt64(final long value) throws IOException;
+
+    /**
+     * Write a variable length 32-bit signed integer.
+     */
+    void writeInt32(final int value) throws IOException;
+
+    /**
+     * Write a variable length 64-bit signed integer.
+     */
+    void writeInt64(final long value) throws IOException;
+
+    /**
+     * Write a variable length 32-bit unsigned integer.
+     */
+    void writeUInt32(int value) throws IOException;
+
+    /**
+     * Write a variable length 64-bit unsigned integer.
+     */
+    void writeUInt64(long value) throws IOException;
+
+    /**
+     * Write a String.
+     */
+    void writeString(String value, Function<Integer, Byte> leadingOrdinalGenerator,
+        boolean tolerateInvalidSurrogatePairs) throws IOException;
+
+    /**
+     * Write a byte array slice.
+     */
+    void writeBytes(byte[] value, int offset, int length) throws IOException;
+  }
 
   /**
    * Create a new {@code ProtoWriter} wrapping the given {@code OutputStream}.
    */
   public ProtoWriter(OutputStream out)
   {
-    this(out, DEFAULT_BUFFER_SIZE);
+    this(new OutputStreamWriter(out));
   }
 
   /**
@@ -82,9 +130,15 @@ public class ProtoWriter implements Closeable
    */
   public ProtoWriter(OutputStream out, int bufferSize)
   {
-    _out = out;
-    _buffer = new byte[bufferSize];
-    _limit = bufferSize;
+    this(new OutputStreamWriter(out, bufferSize));
+  }
+
+  /**
+   * Create a new {@code ProtoWriter} wrapping the given {@link DataWriter}.
+   */
+  public ProtoWriter(DataWriter dataWriter)
+  {
+    _dataWriter = dataWriter;
   }
 
   /**
@@ -92,12 +146,7 @@ public class ProtoWriter implements Closeable
    */
   public void writeByte(final byte value) throws IOException
   {
-    if (_position == _limit)
-    {
-      flush();
-    }
-
-    buffer(value);
+    _dataWriter.writeByte(value);
   }
 
   /**
@@ -105,7 +154,7 @@ public class ProtoWriter implements Closeable
    */
   public void writeBytes(final byte[] value) throws IOException
   {
-    writeBytes(value, 0, value.length);
+    _dataWriter.writeBytes(value, 0, value.length);
   }
 
   /**
@@ -113,38 +162,7 @@ public class ProtoWriter implements Closeable
    */
   public void writeBytes(byte[] value, int offset, int length) throws IOException
   {
-    if (_limit - _position >= length)
-    {
-      // We have room in the current buffer.
-      System.arraycopy(value, offset, _buffer, _position, length);
-      _position += length;
-    }
-    else
-    {
-      // Write extends past current buffer.  Fill the rest of this buffer and
-      // flush.
-      final int bytesWritten = _limit - _position;
-      System.arraycopy(value, offset, _buffer, _position, bytesWritten);
-      offset += bytesWritten;
-      length -= bytesWritten;
-      _position = _limit;
-      flush();
-
-      // Now deal with the rest.
-      // Since we have an output stream, this is our buffer
-      // and buffer offset == 0
-      if (length <= _limit)
-      {
-        // Fits in new buffer.
-        System.arraycopy(value, offset, _buffer, 0, length);
-        _position = length;
-      }
-      else
-      {
-        // Write is very big.  Let's do it all at once.
-        _out.write(value, offset, length);
-      }
-    }
+    _dataWriter.writeBytes(value, offset, length);
   }
 
   /**
@@ -152,11 +170,7 @@ public class ProtoWriter implements Closeable
    */
   public final void writeFixedInt32(final int value) throws IOException
   {
-    flushIfNotAvailable(FIXED32_SIZE);
-    _buffer[_position++] = (byte) (value & 0xFF);
-    _buffer[_position++] = (byte) ((value >> 8) & 0xFF);
-    _buffer[_position++] = (byte) ((value >> 16) & 0xFF);
-    _buffer[_position++] = (byte) ((value >> 24) & 0xFF);
+    _dataWriter.writeFixedInt32(value);
   }
 
   /**
@@ -164,15 +178,7 @@ public class ProtoWriter implements Closeable
    */
   public final void writeInt32(final int value) throws IOException
   {
-    if (value >= 0)
-    {
-      writeUInt32(value);
-    }
-    else
-    {
-      // Must sign-extend.
-      writeUInt64(value);
-    }
+    _dataWriter.writeInt32(value);
   }
 
   /**
@@ -180,15 +186,7 @@ public class ProtoWriter implements Closeable
    */
   public final void writeFixedInt64(final long value) throws IOException
   {
-    flushIfNotAvailable(FIXED64_SIZE);
-    _buffer[_position++] = (byte) ((int) (value) & 0xFF);
-    _buffer[_position++] = (byte) ((int) (value >> 8) & 0xFF);
-    _buffer[_position++] = (byte) ((int) (value >> 16) & 0xFF);
-    _buffer[_position++] = (byte) ((int) (value >> 24) & 0xFF);
-    _buffer[_position++] = (byte) ((int) (value >> 32) & 0xFF);
-    _buffer[_position++] = (byte) ((int) (value >> 40) & 0xFF);
-    _buffer[_position++] = (byte) ((int) (value >> 48) & 0xFF);
-    _buffer[_position++] = (byte) ((int) (value >> 56) & 0xFF);
+    _dataWriter.writeFixedInt64(value);
   }
 
   /**
@@ -196,13 +194,13 @@ public class ProtoWriter implements Closeable
    */
   public final void writeInt64(final long value) throws IOException
   {
-    writeUInt64(value);
+    _dataWriter.writeInt64(value);
   }
 
   /**
    * Compute the number of bytes that would be needed to encode an unsigned 32-bit integer.
    */
-  private static int computeUInt32Size(final int value)
+  public static int computeUInt32Size(final int value)
   {
     if ((value & (~0 << 7)) == 0)
     {
@@ -227,26 +225,12 @@ public class ProtoWriter implements Closeable
     return 5;
   }
 
-  private void buffer(byte value) throws IOException
-  {
-    _buffer[_position++] = value;
-  }
-
   /**
    * Flush any buffered data to the underlying outputstream.
    */
   public void flush() throws IOException
   {
-    _out.write(_buffer, 0, _position);
-    _position = 0;
-  }
-
-  private void flushIfNotAvailable(int requiredSize) throws IOException
-  {
-    if (_limit - _position < requiredSize)
-    {
-      flush();
-    }
+    _dataWriter.flush();
   }
 
   /**
@@ -254,25 +238,7 @@ public class ProtoWriter implements Closeable
    */
   public void writeUInt32(int value) throws IOException
   {
-    flushIfNotAvailable(MAX_VARINT32_SIZE);
-    bufferUInt32(value);
-  }
-
-  private void bufferUInt32(int value) throws IOException
-  {
-    while (true)
-    {
-      if ((value & ~0x7F) == 0)
-      {
-        _buffer[_position++] = (byte) value;
-        return;
-      }
-      else
-      {
-        _buffer[_position++] = (byte) ((value & 0x7F) | 0x80);
-        value >>>= 7;
-      }
-    }
+    _dataWriter.writeUInt32(value);
   }
 
   /**
@@ -280,25 +246,7 @@ public class ProtoWriter implements Closeable
    */
   public void writeUInt64(long value) throws IOException
   {
-    flushIfNotAvailable(MAX_VARINT64_SIZE);
-    bufferUInt64(value);
-  }
-
-  private void bufferUInt64(long value) throws IOException
-  {
-    while (true)
-    {
-      if ((value & ~0x7FL) == 0)
-      {
-        _buffer[_position++] = (byte) value;
-        return;
-      }
-      else
-      {
-        _buffer[_position++] = (byte) (((int) value & 0x7F) | 0x80);
-        value >>>= 7;
-      }
-    }
+    _dataWriter.writeInt64(value);
   }
 
   /**
@@ -306,7 +254,7 @@ public class ProtoWriter implements Closeable
    */
   public void writeString(String value) throws IOException
   {
-    writeString(value, null);
+    _dataWriter.writeString(value, null, false);
   }
 
   /**
@@ -314,7 +262,7 @@ public class ProtoWriter implements Closeable
    */
   public void writeString(String value, Function<Integer, Byte> leadingOrdinalGenerator) throws IOException
   {
-    writeString(value, leadingOrdinalGenerator, false);
+    _dataWriter.writeString(value, leadingOrdinalGenerator, false);
   }
 
   /**
@@ -323,93 +271,12 @@ public class ProtoWriter implements Closeable
   public void writeString(String value, Function<Integer, Byte> leadingOrdinalGenerator,
       boolean tolerateInvalidSurrogatePairs) throws IOException
   {
-    // Based on whether a leading ordinal generator is provided or not, we need to budget 0 or 1 byte.
-    final int leadingOrdinalLength = (leadingOrdinalGenerator == null) ? 0 : 1;
-
-    // UTF-8 byte length of the string is at least its UTF-16 code unit length (value.length()),
-    // and at most 3 times of it. We take advantage of this in both branches below.
-    final int maxLength = value.length() * 3;
-    final int maxLengthVarIntSize = computeUInt32Size(maxLength);
-
-    // If we are streaming and the potential length is too big to fit in our buffer, we take the
-    // slower path.
-    if (maxLengthVarIntSize + maxLength + leadingOrdinalLength > _limit)
-    {
-      // Allocate a byte[] that we know can fit the string and encode into it. String.getBytes()
-      // does the same internally and then does *another copy* to return a byte[] of exactly the
-      // right size. We can skip that copy and just writeRawBytes up to the actualLength of the
-      // UTF-8 encoded bytes.
-      final byte[] encodedBytes = new byte[maxLength];
-      int actualLength = Utf8Utils.encode(value, encodedBytes, 0, maxLength, tolerateInvalidSurrogatePairs);
-
-      if (leadingOrdinalGenerator != null)
-      {
-        writeByte(leadingOrdinalGenerator.apply(actualLength));
-      }
-
-      writeUInt32(actualLength);
-      writeBytes(encodedBytes, 0, actualLength);
-      return;
-    }
-
-    // Fast path: we have enough space available in our buffer for the string...
-    if (maxLengthVarIntSize + maxLength + leadingOrdinalLength > _limit - _position)
-    {
-      // Flush to free up space.
-      flush();
-    }
-
-    final int oldPosition = _position;
-    try
-    {
-      // Optimize for the case where we know this length results in a constant varint length as
-      // this saves a pass for measuring the length of the string.
-      final int minLengthVarIntSize = computeUInt32Size(value.length());
-
-      if (minLengthVarIntSize == maxLengthVarIntSize)
-      {
-        _position = oldPosition + leadingOrdinalLength + minLengthVarIntSize;
-        int newPosition = Utf8Utils.encode(value, _buffer, _position, _limit - _position, tolerateInvalidSurrogatePairs);
-        // Since this class is stateful and tracks the position, we rewind and store the state,
-        // prepend the length, then reset it back to the end of the string.
-        _position = oldPosition;
-        int length = newPosition - oldPosition - leadingOrdinalLength - minLengthVarIntSize;
-
-        if (leadingOrdinalGenerator != null)
-        {
-          buffer(leadingOrdinalGenerator.apply(length));
-        }
-
-        bufferUInt32(length);
-        _position = newPosition;
-      }
-      else
-      {
-        int length = Utf8Utils.encodedLength(value, tolerateInvalidSurrogatePairs);
-
-        if (leadingOrdinalGenerator != null)
-        {
-          buffer(leadingOrdinalGenerator.apply(length));
-        }
-
-        bufferUInt32(length);
-        _position = Utf8Utils.encode(value, _buffer, _position, length, tolerateInvalidSurrogatePairs);
-      }
-    }
-    catch (IllegalArgumentException e)
-    {
-      throw new IOException(e);
-    }
-    catch (IndexOutOfBoundsException e)
-    {
-      throw new EOFException(String.format("Pos: %d, limit: %d, len: %d", _position, _limit, 1));
-    }
+    _dataWriter.writeString(value, leadingOrdinalGenerator, tolerateInvalidSurrogatePairs);
   }
 
   @Override
   public void close() throws IOException
   {
-    flush();
-    _out.close();
+    _dataWriter.close();
   }
 }

@@ -16,9 +16,13 @@
 
 package com.linkedin.data.template;
 
+import com.linkedin.data.Data;
 import com.linkedin.data.DataMap;
+import com.linkedin.data.collections.CheckedUtil;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.MapDataSchema;
 import com.linkedin.util.ArgumentUtil;
+import java.io.IOException;
 import java.util.Map;
 
 
@@ -27,32 +31,38 @@ import java.util.Map;
  */
 public final class LongMap extends DirectMapTemplate<Long>
 {
+  public static final SpecificDataComplexProvider SPECIFIC_DATA_COMPLEX_PROVIDER = new LongMapSpecificDataComplexProvider();
   private static final MapDataSchema SCHEMA = (MapDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"map\", \"values\" : \"long\" }");
 
   public LongMap()
   {
-    this(new DataMap());
+    this(new DataMap(new LongSpecificValueMap()));
   }
 
   public LongMap(int initialCapacity)
   {
-    this(new DataMap(initialCapacity));
+    this(new DataMap(new LongSpecificValueMap(initialCapacity)));
   }
 
   public LongMap(int initialCapacity, float loadFactor)
   {
-    this(new DataMap(initialCapacity, loadFactor));
+    this(new DataMap(new LongSpecificValueMap(initialCapacity, loadFactor)));
   }
 
   public LongMap(Map<String, Long> m)
   {
-    this(newDataMapOfSize(m.size()));
+    this(capacityFromSize(m.size()));
     putAll(m);
   }
 
   public LongMap(DataMap map)
   {
     super(map, SCHEMA, Long.class, Long.class);
+  }
+
+  public void put(String key, long value)
+  {
+    CheckedUtil.putWithoutChecking(_map, key, value);
   }
 
   @Override
@@ -78,5 +88,45 @@ public final class LongMap extends DirectMapTemplate<Long>
   protected Long coerceOutput(Object object) throws TemplateOutputCastException
   {
     return DataTemplateUtil.coerceLongOutput(object);
+  }
+
+  public static class LongSpecificValueMap extends SpecificValueMapTemplate<Long>
+  {
+    public LongSpecificValueMap()
+    {
+      super(Long.class);
+    }
+
+    public LongSpecificValueMap(int capacity)
+    {
+      super(capacity, Long.class);
+    }
+
+    public LongSpecificValueMap(int capacity, float loadFactor)
+    {
+      super(capacity, loadFactor, Long.class);
+    }
+
+    @Override
+    protected void specificTraverse(Long object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      callback.longValue(object);
+    }
+  }
+
+  private static class LongMapSpecificDataComplexProvider implements SpecificDataComplexProvider
+  {
+    @Override
+    public Map<String, Object> getMap()
+    {
+      return new LongSpecificValueMap();
+    }
+
+    @Override
+    public Map<String, Object> getMap(int capacity)
+    {
+      return new LongSpecificValueMap(capacity);
+    }
   }
 }

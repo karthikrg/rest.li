@@ -16,9 +16,12 @@
 
 package com.linkedin.data.template;
 
+import com.linkedin.data.Data;
 import com.linkedin.data.DataMap;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.MapDataSchema;
 import com.linkedin.util.ArgumentUtil;
+import java.io.IOException;
 import java.util.Map;
 
 
@@ -27,26 +30,27 @@ import java.util.Map;
  */
 public final class StringMap extends DirectMapTemplate<String>
 {
+  public static final SpecificDataComplexProvider SPECIFIC_DATA_COMPLEX_PROVIDER = new StringMapSpecificDataComplexProvider();
   private static final MapDataSchema SCHEMA = (MapDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"map\", \"values\" : \"string\" }");
 
   public StringMap()
   {
-    this(new DataMap());
+    this(new DataMap(new StringSpecificValueMap()));
   }
 
   public StringMap(int initialCapacity)
   {
-    this(new DataMap(initialCapacity));
+    this(new DataMap(new StringSpecificValueMap(initialCapacity)));
   }
 
   public StringMap(int initialCapacity, float loadFactor)
   {
-    this(new DataMap(initialCapacity, loadFactor));
+    this(new DataMap(new StringSpecificValueMap(initialCapacity, loadFactor)));
   }
 
   public StringMap(Map<String, String> m)
   {
-    this(newDataMapOfSize(m.size()));
+    this(capacityFromSize(m.size()));
     putAll(m);
   }
 
@@ -78,5 +82,45 @@ public final class StringMap extends DirectMapTemplate<String>
   protected String coerceOutput(Object object) throws TemplateOutputCastException
   {
     return DataTemplateUtil.coerceStringOutput(object);
+  }
+
+  public static class StringSpecificValueMap extends SpecificValueMapTemplate<String>
+  {
+    public StringSpecificValueMap()
+    {
+      super(String.class);
+    }
+
+    public StringSpecificValueMap(int capacity)
+    {
+      super(capacity, String.class);
+    }
+
+    public StringSpecificValueMap(int capacity, float loadFactor)
+    {
+      super(capacity, loadFactor, String.class);
+    }
+
+    @Override
+    protected void specificTraverse(String object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      callback.stringValue(object);
+    }
+  }
+
+  private static class StringMapSpecificDataComplexProvider implements SpecificDataComplexProvider
+  {
+    @Override
+    public Map<String, Object> getMap()
+    {
+      return new StringSpecificValueMap();
+    }
+
+    @Override
+    public Map<String, Object> getMap(int capacity)
+    {
+      return new StringSpecificValueMap(capacity);
+    }
   }
 }

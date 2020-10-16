@@ -17,6 +17,8 @@
 package com.linkedin.data.template;
 
 
+import com.linkedin.data.Data;
+import com.linkedin.data.DataList;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.DataMapBuilder;
 import com.linkedin.data.collections.CheckedUtil;
@@ -24,10 +26,13 @@ import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.MapDataSchema;
 import com.linkedin.data.template.DataObjectToObjectCache;
 import com.linkedin.util.ArgumentUtil;
+import com.linkedin.util.Lazy;
+import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.util.AbstractMap;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
@@ -49,8 +54,23 @@ public abstract class WrappingMapTemplate<V extends DataTemplate<?>> extends Abs
   protected WrappingMapTemplate(DataMap map, MapDataSchema schema, Class<V> valueClass)
       throws TemplateOutputCastException
   {
-    super(map, schema, valueClass, DataTemplateUtil.getDataClass(schema.getValues()));
-    _cache = new DataObjectToObjectCache<>(DataMapBuilder.getOptimumHashMapCapacityFromSize(map.size()));
+    this(map, schema, valueClass, DataTemplateUtil.getDataClass(schema.getValues()));
+  }
+
+  /**
+   * Constructor.
+   *
+   * @param map is the underlying {@link DataMap} that will be proxied by this {@link WrappingMapTemplate}.
+   * @param schema is the {@link DataSchema} of the map.
+   * @param valueClass is the class of elements returned by this {@link WrappingMapTemplate}.
+   * @param valueDataClass is the class of raw data elements returned by this {@link WrappingMapTemplate}.
+   */
+  protected WrappingMapTemplate(DataMap map, MapDataSchema schema, Class<V> valueClass, Class<?> valueDataClass)
+      throws TemplateOutputCastException
+  {
+    super(map, schema, valueClass, valueDataClass);
+    final int size = map.size();
+    _cache = new Lazy<>(() -> new HashMap<>(DataMapBuilder.getOptimumHashMapCapacityFromSize(size)));
     _entrySet = new EntrySet();
   }
 
@@ -113,9 +133,10 @@ public abstract class WrappingMapTemplate<V extends DataTemplate<?>> extends Abs
     return clone;
   }
 
+  @SuppressWarnings("unchecked")
   private void initializeClone() throws CloneNotSupportedException
   {
-    _cache = _cache.clone();
+    _cache = new Lazy<>((HashMap<String, V>) _cache.get().clone());
     _entrySet = new EntrySet();
   }
 
@@ -129,7 +150,7 @@ public abstract class WrappingMapTemplate<V extends DataTemplate<?>> extends Abs
 
   private void initializeCopy()
   {
-    _cache = new DataObjectToObjectCache<V>(data().size());
+    _cache = new Lazy<>(() -> new HashMap<>(size()));
     _entrySet = new EntrySet();
   }
 
@@ -161,16 +182,17 @@ public abstract class WrappingMapTemplate<V extends DataTemplate<?>> extends Abs
   protected V cacheLookup(Object value, String key) throws TemplateOutputCastException
   {
     V wrapped;
+    HashMap<String, V> cache = _cache.get();
     if (value == null)
     {
       wrapped = null;
     }
-    else if ((wrapped = _cache.get(value)) == null || wrapped.data() != value)
+    else if ((wrapped = cache.get(key)) == null || wrapped.data() != value)
     {
       wrapped = coerceOutput(value);
       if (key != null)
       {
-        _cache.put(value, wrapped);
+        cache.put(key, wrapped);
       }
     }
     return wrapped;
@@ -322,5 +344,55 @@ public abstract class WrappingMapTemplate<V extends DataTemplate<?>> extends Abs
 
   private Constructor<V> _constructor;
   protected EntrySet _entrySet;
-  protected DataObjectToObjectCache<V> _cache;
+  protected Lazy<HashMap<String, V>> _cache;
+
+  public static class DataMapSpecificValueMap extends SpecificValueMapTemplate<DataMap>
+  {
+    public DataMapSpecificValueMap()
+    {
+      super(DataMap.class);
+    }
+
+    public DataMapSpecificValueMap(int capacity)
+    {
+      super(capacity, DataMap.class);
+    }
+
+    public DataMapSpecificValueMap(int capacity, float loadFactor)
+    {
+      super(capacity, loadFactor, DataMap.class);
+    }
+
+    @Override
+    protected void specificTraverse(DataMap object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      object.traverse(callback, cycleChecker);
+    }
+  }
+
+  public static class DataListSpecificValueMap extends SpecificValueMapTemplate<DataList>
+  {
+    public DataListSpecificValueMap()
+    {
+      super(DataList.class);
+    }
+
+    public DataListSpecificValueMap(int capacity)
+    {
+      super(capacity, DataList.class);
+    }
+
+    public DataListSpecificValueMap(int capacity, float loadFactor)
+    {
+      super(capacity, loadFactor, DataList.class);
+    }
+
+    @Override
+    protected void specificTraverse(DataList object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      object.traverse(callback, cycleChecker);
+    }
+  }
 }

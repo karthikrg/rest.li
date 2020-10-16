@@ -24,12 +24,15 @@ import com.linkedin.data.DataMap;
 import com.linkedin.data.DataMapBuilder;
 import com.linkedin.data.codec.symbol.SymbolTable;
 import com.linkedin.data.collections.CheckedUtil;
+import com.linkedin.data.collections.ChunkedDataOutput;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.protobuf.ProtoReader;
 import com.linkedin.data.protobuf.ProtoWriter;
-import com.linkedin.util.FastByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 
@@ -129,17 +132,45 @@ public class ProtobufDataCodec implements DataCodec
   @Override
   public byte[] mapToBytes(DataMap map) throws IOException
   {
-    FastByteArrayOutputStream baos = new FastByteArrayOutputStream(_options.getProtoWriterBufferSize());
-    writeMap(map, baos);
-    return baos.toByteArray();
+    ChunkedDataOutput out = new ChunkedDataOutput(_options.getProtoWriterBufferSize());
+    try (TraverseCallback callback = createTraverseCallback(new ProtoWriter(new ProtobufChunkedDataOutputWriter(out))))
+    {
+      Data.traverse(map, callback);
+    }
+    return out.toByteArray();
   }
 
   @Override
   public byte[] listToBytes(DataList list) throws IOException
   {
-    FastByteArrayOutputStream baos = new FastByteArrayOutputStream(_options.getProtoWriterBufferSize());
-    writeList(list, baos);
-    return baos.toByteArray();
+    ChunkedDataOutput out = new ChunkedDataOutput(_options.getProtoWriterBufferSize());
+    try (TraverseCallback callback = createTraverseCallback(new ProtoWriter(new ProtobufChunkedDataOutputWriter(out))))
+    {
+      Data.traverse(list, callback);
+    }
+    return out.toByteArray();
+  }
+
+  @Override
+  public ByteString mapToByteString(DataMap map) throws IOException
+  {
+    ChunkedDataOutput out = new ChunkedDataOutput(_options.getProtoWriterBufferSize());
+    try (TraverseCallback callback = createTraverseCallback(new ProtoWriter(new ProtobufChunkedDataOutputWriter(out))))
+    {
+      Data.traverse(map, callback);
+    }
+    return out.toUnsafeByteString();
+  }
+
+  @Override
+  public ByteString listToByteString(DataList list) throws IOException
+  {
+    ChunkedDataOutput out = new ChunkedDataOutput(_options.getProtoWriterBufferSize());
+    try (TraverseCallback callback = createTraverseCallback(new ProtoWriter(new ProtobufChunkedDataOutputWriter(out))))
+    {
+      Data.traverse(list, callback);
+    }
+    return out.toUnsafeByteString();
   }
 
   @Override
@@ -163,13 +194,13 @@ public class ProtobufDataCodec implements DataCodec
   @Override
   public DataMap bytesToMap(byte[] input) throws IOException
   {
-    return (DataMap) readValue(ProtoReader.newInstance(input), this::isMap);
+    return (DataMap) readValue(ProtoReader.newInstance(input), this::isMap, SpecificDataComplexProvider.DEFAULT);
   }
 
   @Override
   public DataList bytesToList(byte[] input) throws IOException
   {
-    return (DataList) readValue(ProtoReader.newInstance(input), this::isList);
+    return (DataList) readValue(ProtoReader.newInstance(input), this::isList, SpecificDataComplexProvider.DEFAULT);
   }
 
   @Override
@@ -177,7 +208,7 @@ public class ProtobufDataCodec implements DataCodec
   {
     try
     {
-      return (DataMap) readValue(ProtoReader.newInstance(in), this::isMap);
+      return (DataMap) readValue(ProtoReader.newInstance(in), this::isMap, SpecificDataComplexProvider.DEFAULT);
     }
     finally
     {
@@ -190,7 +221,7 @@ public class ProtobufDataCodec implements DataCodec
   {
     try
     {
-      return (DataList) readValue(ProtoReader.newInstance(in), this::isList);
+      return (DataList) readValue(ProtoReader.newInstance(in), this::isList, SpecificDataComplexProvider.DEFAULT);
     }
     finally
     {
@@ -201,13 +232,25 @@ public class ProtobufDataCodec implements DataCodec
   @Override
   public DataMap readMap(ByteString in) throws IOException
   {
-    return (DataMap) readValue(in.asProtoReader(), this::isMap);
+    return readMap(in, SpecificDataComplexProvider.DEFAULT);
+  }
+
+  @Override
+  public DataMap readMap(ByteString in, SpecificDataComplexProvider provider) throws IOException
+  {
+    return (DataMap) readValue(in.asProtoReader(), this::isMap, provider);
   }
 
   @Override
   public DataList readList(ByteString in) throws IOException
   {
-    return (DataList) readValue(in.asProtoReader(), this::isList);
+    return readList(in, SpecificDataComplexProvider.DEFAULT);
+  }
+
+  @Override
+  public DataList readList(ByteString in, SpecificDataComplexProvider provider) throws IOException
+  {
+    return (DataList) readValue(in.asProtoReader(), this::isList, provider);
   }
 
   /**
@@ -226,33 +269,36 @@ public class ProtobufDataCodec implements DataCodec
     return new ProtobufTraverseCallback(protoWriter, _options);
   }
 
-  protected Object readUnknownValue(byte ordinal, ProtoReader reader) throws IOException
+  protected Object readUnknownValue(byte ordinal, ProtoReader reader, SpecificDataComplexProvider provider) throws IOException
   {
     throw new DataDecodingException("Unknown ordinal: " + ordinal);
   }
 
-  protected final DataList readList(ProtoReader reader) throws IOException
+  protected final DataList readList(ProtoReader reader, SpecificDataComplexProvider provider) throws IOException
   {
     int size = reader.readInt32();
-    DataList dataList = new DataList(size);
+    List<Object> list = provider.getList(size);
+    final SpecificDataComplexProvider childProvider = provider.getChild();
     for (int i = 0; i < size; i++)
     {
-      CheckedUtil.addWithoutChecking(dataList, readValue(reader, null));
+      list.add(readValue(reader, null, childProvider));
     }
 
-    return dataList;
+    return new DataList(list, false);
   }
 
-  protected final DataMap readMap(ProtoReader reader) throws IOException
+  protected final DataMap readMap(ProtoReader reader, SpecificDataComplexProvider provider) throws IOException
   {
     int size = reader.readInt32();
-    DataMap dataMap = new DataMap(DataMapBuilder.getOptimumHashMapCapacityFromSize(size));
+    Map<String, Object> map = provider.getMap(DataMapBuilder.getOptimumHashMapCapacityFromSize(size));
     for (int i = 0; i < size; i++)
     {
-      CheckedUtil.putWithoutChecking(dataMap, (String) readValue(reader, this::isString), readValue(reader, null));
+      final String key = (String) readValue(reader, this::isString, SpecificDataComplexProvider.DEFAULT);
+      final SpecificDataComplexProvider childProvider = provider.getChild(key);
+      map.put(key, readValue(reader, null, childProvider));
     }
 
-    return dataMap;
+    return new DataMap(map, false);
   }
 
   protected final String readStringReference(ProtoReader reader) throws IOException
@@ -275,7 +321,9 @@ public class ProtobufDataCodec implements DataCodec
     return reader.readString();
   }
 
-  protected final Object readValue(ProtoReader reader, Function<Byte, Boolean> matcher) throws IOException
+  protected final Object readValue(ProtoReader reader,
+      Function<Byte, Boolean> matcher,
+      SpecificDataComplexProvider provider) throws IOException
   {
     byte ordinal = reader.readRawByte();
     if (matcher != null && !matcher.apply(ordinal))
@@ -285,8 +333,8 @@ public class ProtobufDataCodec implements DataCodec
 
     switch (ordinal)
     {
-      case MAP_ORDINAL: return readMap(reader);
-      case LIST_ORDINAL: return readList(reader);
+      case MAP_ORDINAL: return readMap(reader, provider);
+      case LIST_ORDINAL: return readList(reader, provider);
       case ASCII_STRING_LITERAL_ORDINAL: return readASCIIStringLiteral(reader);
       case STRING_LITERAL_ORDINAL: return readStringLiteral(reader);
       case STRING_REFERENCE_ORDINAL: return readStringReference(reader);
@@ -302,7 +350,7 @@ public class ProtobufDataCodec implements DataCodec
       case NULL_ORDINAL: return Data.NULL;
     }
 
-    return readUnknownValue(ordinal, reader);
+    return readUnknownValue(ordinal, reader, provider);
   }
 
   protected boolean isString(byte ordinal)

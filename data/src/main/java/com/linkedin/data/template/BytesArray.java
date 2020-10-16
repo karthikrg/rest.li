@@ -17,11 +17,15 @@
 package com.linkedin.data.template;
 
 import com.linkedin.data.ByteString;
+import com.linkedin.data.Data;
 import com.linkedin.data.DataList;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.ArrayDataSchema;
 import com.linkedin.util.ArgumentUtil;
+import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.List;
 
 
 /**
@@ -29,21 +33,22 @@ import java.util.Collection;
  */
 public final class BytesArray extends DirectArrayTemplate<ByteString>
 {
+  public static final SpecificDataComplexProvider SPECIFIC_DATA_COMPLEX_PROVIDER = new ByteStringArraySpecificDataComplexProvider();
   private static final ArrayDataSchema SCHEMA = (ArrayDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"array\", \"items\" : \"bytes\" }");
 
   public BytesArray()
   {
-    this(new DataList());
+    this(new DataList(new ByteStringSpecificElementArray()));
   }
 
   public BytesArray(int initialCapacity)
   {
-    this(new DataList(initialCapacity));
+    this(new DataList(new ByteStringSpecificElementArray(initialCapacity)));
   }
 
   public BytesArray(Collection<ByteString> c)
   {
-    this(new DataList(c.size()));
+    this(new DataList(new ByteStringSpecificElementArray(c.size())));
     addAll(c);
   }
 
@@ -54,7 +59,7 @@ public final class BytesArray extends DirectArrayTemplate<ByteString>
 
   public BytesArray(ByteString first, ByteString... rest)
   {
-    this(new DataList(rest.length + 1));
+    this(new DataList(new ByteStringSpecificElementArray(rest.length + 1)));
     add(first);
     addAll(Arrays.asList(rest));
   }
@@ -83,5 +88,40 @@ public final class BytesArray extends DirectArrayTemplate<ByteString>
   {
     assert(object != null);
     return DataTemplateUtil.coerceBytesOutput(object);
+  }
+
+  public static class ByteStringSpecificElementArray extends SpecificElementArrayTemplate<ByteString>
+  {
+    public ByteStringSpecificElementArray()
+    {
+      super(ByteString.class);
+    }
+
+    public ByteStringSpecificElementArray(int capacity)
+    {
+      super(capacity, ByteString.class);
+    }
+
+    @Override
+    protected void specificTraverse(ByteString object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      callback.byteStringValue(object);
+    }
+  }
+
+  private static class ByteStringArraySpecificDataComplexProvider implements SpecificDataComplexProvider
+  {
+    @Override
+    public List<Object> getList()
+    {
+      return new ByteStringSpecificElementArray();
+    }
+
+    @Override
+    public List<Object> getList(int capacity)
+    {
+      return new ByteStringSpecificElementArray(capacity);
+    }
   }
 }

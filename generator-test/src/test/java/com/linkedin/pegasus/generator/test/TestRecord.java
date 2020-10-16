@@ -86,21 +86,27 @@ public class TestRecord
       // has with field present
       assertTrue((Boolean) hasMethod.invoke(record));
 
-      // get with field present
       result = getMethod.invoke(record);
       if (value instanceof DataTemplate || value instanceof Enum)
       {
+        // get with field present
         assertSame(result, value);
+
+        // GetMode.NULL, GetMode.DEFAULT, GetMode.STRICT with field present
+        assertSame(getModeMethod.invoke(record, GetMode.NULL), result);
+        assertSame(getModeMethod.invoke(record, GetMode.DEFAULT), result);
+        assertSame(getModeMethod.invoke(record, GetMode.STRICT), result);
       }
       else
       {
+        // get with field present
         assertEquals(result, value);
-      }
 
-      // GetMode.NULL, GetMode.DEFAULT, GetMode.STRICT with field present
-      assertSame(getModeMethod.invoke(record, GetMode.NULL), result);
-      assertSame(getModeMethod.invoke(record, GetMode.DEFAULT), result);
-      assertSame(getModeMethod.invoke(record, GetMode.STRICT), result);
+        // GetMode.NULL, GetMode.DEFAULT, GetMode.STRICT with field present
+        assertEquals(getModeMethod.invoke(record, GetMode.NULL), result);
+        assertEquals(getModeMethod.invoke(record, GetMode.DEFAULT), result);
+        assertEquals(getModeMethod.invoke(record, GetMode.STRICT), result);
+      }
 
       // remove
       removeMethod.invoke(record);
@@ -149,21 +155,21 @@ public class TestRecord
 
       // SetMode.IGNORE_NULL
       setModeMethod.invoke(record, value, SetMode.IGNORE_NULL);
-      assertSame(getMethod.invoke(record), value);
+      assertEquals(getMethod.invoke(record), value);
       setModeMethod.invoke(record, null, SetMode.IGNORE_NULL);
-      assertSame(getMethod.invoke(record), value);
+      assertEquals(getMethod.invoke(record), value);
 
       // SetMode.REMOVE_IF_NULL
       removeMethod.invoke(record);
       setModeMethod.invoke(record, value, SetMode.REMOVE_IF_NULL);
-      assertSame(getMethod.invoke(record), value);
+      assertEquals(getMethod.invoke(record), value);
       setModeMethod.invoke(record, null, SetMode.REMOVE_IF_NULL);
       assertFalse((Boolean) hasMethod.invoke(record));
 
       // SetMode.REMOVE_OPTIONAL_IF_NULL
       removeMethod.invoke(record);
       setModeMethod.invoke(record, value, SetMode.REMOVE_OPTIONAL_IF_NULL);
-      assertSame(getMethod.invoke(record), value);
+      assertEquals(getMethod.invoke(record), value);
       try
       {
         setModeMethod.invoke(record, null, SetMode.REMOVE_OPTIONAL_IF_NULL);
@@ -475,7 +481,7 @@ public class TestRecord
     assertEquals(recordCopy, record);
     assertTrue(TestUtil.noCommonDataComplex(recordCopy, record));
     assertNotSame(recordCopy.data(), record.data());
-    assertSame(recordCopy.getIntField(), record.getIntField());
+    assertEquals(recordCopy.getIntField(), record.getIntField());
 
     recordCopy.setIntField(99);
     assertEquals(record.getIntField().intValue(), 52);

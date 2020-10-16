@@ -602,7 +602,8 @@ public class TestComplexKeysResource extends RestLiIntegrationTest
       final UpdateStatus status = resp.getValue();
       if (status.hasError())
       {
-        Assert.assertTrue(status.getStatus() == status.getError().getStatus(), "Update status should match the status of the error, if there is any.");
+        Assert.assertEquals(status.getError().getStatus(), status.getStatus(),
+            "Update status should match the status of the error, if there is any.");
       }
       else
       {

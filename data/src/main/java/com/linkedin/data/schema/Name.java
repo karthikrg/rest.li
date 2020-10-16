@@ -99,7 +99,7 @@ public final class Name implements Comparable<Name>
     }
     _name = name;
     _namespace = namespace;
-    _fullName = fullName;
+    _fullName = fullName.intern();
     _isEmpty = false;
     if (isValidName(fullName) == false)
     {
@@ -125,7 +125,7 @@ public final class Name implements Comparable<Name>
     _isEmpty = false;
     _name = name;
     _namespace = namespace;
-    _fullName = namespace.isEmpty() ? _name : _namespace + "." + _name;
+    _fullName = (namespace.isEmpty() ? _name : _namespace + "." + _name).intern();
     if (isValidName(name) == false)
     {
       errorMessageBuilder.append("\"").append(name).append("\" is an invalid name.\n");

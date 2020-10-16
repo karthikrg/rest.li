@@ -16,9 +16,13 @@
 
 package com.linkedin.data.template;
 
+import com.linkedin.data.Data;
 import com.linkedin.data.DataMap;
+import com.linkedin.data.collections.CheckedUtil;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.MapDataSchema;
 import com.linkedin.util.ArgumentUtil;
+import java.io.IOException;
 import java.util.Map;
 
 
@@ -27,32 +31,38 @@ import java.util.Map;
  */
 public final class BooleanMap extends DirectMapTemplate<Boolean>
 {
+  public static final SpecificDataComplexProvider SPECIFIC_DATA_COMPLEX_PROVIDER = new BooleanMapSpecificDataComplexProvider();
   private static final MapDataSchema SCHEMA = (MapDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"map\", \"values\" : \"boolean\" }");
 
   public BooleanMap()
   {
-    this(new DataMap());
+    this(new DataMap(new BooleanSpecificValueMap()));
   }
 
   public BooleanMap(int initialCapacity)
   {
-    this(new DataMap(initialCapacity));
+    this(new DataMap(new BooleanSpecificValueMap(initialCapacity)));
   }
 
   public BooleanMap(int initialCapacity, float loadFactor)
   {
-    this(new DataMap(initialCapacity, loadFactor));
+    this(new DataMap(new BooleanSpecificValueMap(initialCapacity, loadFactor)));
   }
 
   public BooleanMap(Map<String, Boolean> m)
   {
-    this(newDataMapOfSize(m.size()));
+    this(capacityFromSize(m.size()));
     putAll(m);
   }
 
   public BooleanMap(DataMap map)
   {
     super(map, SCHEMA, Boolean.class, Boolean.class);
+  }
+
+  public void put(String key, boolean value)
+  {
+    CheckedUtil.putWithoutChecking(_map, key, value);
   }
 
   @Override
@@ -78,5 +88,45 @@ public final class BooleanMap extends DirectMapTemplate<Boolean>
   protected Boolean coerceOutput(Object object) throws TemplateOutputCastException
   {
     return DataTemplateUtil.coerceBooleanOutput(object);
+  }
+
+  public static class BooleanSpecificValueMap extends SpecificValueMapTemplate<Boolean>
+  {
+    public BooleanSpecificValueMap()
+    {
+      super(Boolean.class);
+    }
+
+    public BooleanSpecificValueMap(int capacity)
+    {
+      super(capacity, Boolean.class);
+    }
+
+    public BooleanSpecificValueMap(int capacity, float loadFactor)
+    {
+      super(capacity, loadFactor, Boolean.class);
+    }
+
+    @Override
+    protected void specificTraverse(Boolean object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      callback.booleanValue(object);
+    }
+  }
+
+  private static class BooleanMapSpecificDataComplexProvider implements SpecificDataComplexProvider
+  {
+    @Override
+    public Map<String, Object> getMap()
+    {
+      return new BooleanSpecificValueMap();
+    }
+
+    @Override
+    public Map<String, Object> getMap(int capacity)
+    {
+      return new BooleanSpecificValueMap(capacity);
+    }
   }
 }

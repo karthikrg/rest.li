@@ -19,6 +19,7 @@ package com.linkedin.data.template;
 import com.linkedin.data.Data;
 import com.linkedin.data.DataMap;
 import com.linkedin.data.collections.CheckedMap;
+import com.linkedin.data.collections.SpecificMap;
 import com.linkedin.data.schema.DataSchema;
 import com.linkedin.data.schema.DataSchemaConstants;
 import com.linkedin.data.schema.UnionDataSchema;
@@ -65,6 +66,22 @@ import com.linkedin.data.schema.UnionDataSchema;
 public class UnionTemplate implements DataTemplate<Object>
 {
   /**
+   * Constructor meant for invocation from code-generated unions.
+   *
+   * @param specificMap backing the union.
+   * @param schema of the union.
+   */
+  protected UnionTemplate(SpecificMap specificMap, UnionDataSchema schema)
+  {
+    DataMap dataMap = new DataMap(specificMap);
+    _map = dataMap;
+    _data = dataMap;
+    _schema = schema;
+    _specificMap = specificMap;
+    _cache = null;
+  }
+
+  /**
    * Constructor.
    *
    * @param object backing the union.
@@ -76,10 +93,12 @@ public class UnionTemplate implements DataTemplate<Object>
     if (object == null || object == Data.NULL)
     {
       _map = null;
+      _specificMap = null;
     }
     else if (object.getClass() == DataMap.class)
     {
       _map = (DataMap) object;
+      _specificMap = _map.getSpecificMap();
     }
     else
     {
@@ -176,12 +195,22 @@ public class UnionTemplate implements DataTemplate<Object>
   }
 
   @Override
+  @SuppressWarnings("unchecked")
   public UnionTemplate clone() throws CloneNotSupportedException
   {
     UnionTemplate clone = (UnionTemplate) super.clone();
     if (clone._map != null)
     {
-      clone._map = clone._map.clone();
+      if (_specificMap != null)
+      {
+        clone._specificMap = (SpecificMap)_specificMap.clone();
+        clone._map = new DataMap(clone._specificMap);
+      }
+      else
+      {
+        clone._specificMap = null;
+        clone._map = _map.clone();
+      }
       clone._data = clone._map;
     }
     else
@@ -197,7 +226,17 @@ public class UnionTemplate implements DataTemplate<Object>
     UnionTemplate copy = (UnionTemplate) super.clone();
     if (copy._map != null)
     {
-      copy._map = copy._map.copy();
+      if (_specificMap != null)
+      {
+        copy._specificMap = _specificMap.copy();
+        copy._map = new DataMap(copy._specificMap);
+      }
+      else
+      {
+        copy._specificMap = null;
+        copy._map = _map.copy();
+      }
+
       copy._data = copy._map;
       copy._cache = null;
     }
@@ -458,6 +497,7 @@ public class UnionTemplate implements DataTemplate<Object>
   protected Object _data;
   protected DataMap _map;
   protected final UnionDataSchema _schema;
+  protected SpecificMap _specificMap;
   protected DataTemplate<?> _cache;
   protected Object _customTypeCache;
 }

@@ -16,9 +16,13 @@
 
 package com.linkedin.data.template;
 
+import com.linkedin.data.Data;
 import com.linkedin.data.DataMap;
+import com.linkedin.data.collections.CheckedUtil;
+import com.linkedin.data.collections.SpecificDataComplexProvider;
 import com.linkedin.data.schema.MapDataSchema;
 import com.linkedin.util.ArgumentUtil;
+import java.io.IOException;
 import java.util.Map;
 
 
@@ -27,32 +31,38 @@ import java.util.Map;
  */
 public final class IntegerMap extends DirectMapTemplate<Integer>
 {
+  public static final SpecificDataComplexProvider SPECIFIC_DATA_COMPLEX_PROVIDER = new IntegerMapSpecificDataComplexProvider();
   private static final MapDataSchema SCHEMA = (MapDataSchema) DataTemplateUtil.parseSchema("{ \"type\" : \"map\", \"values\" : \"int\" }");
 
   public IntegerMap()
   {
-    this(new DataMap());
+    this(new DataMap(new IntegerSpecificValueMap()));
   }
 
   public IntegerMap(int initialCapacity)
   {
-    this(new DataMap(initialCapacity));
+    this(new DataMap(new IntegerSpecificValueMap(initialCapacity)));
   }
 
   public IntegerMap(int initialCapacity, float loadFactor)
   {
-    this(new DataMap(initialCapacity, loadFactor));
+    this(new DataMap(new IntegerSpecificValueMap(initialCapacity, loadFactor)));
   }
 
   public IntegerMap(Map<String, Integer> m)
   {
-    this(newDataMapOfSize(m.size()));
+    this(capacityFromSize(m.size()));
     putAll(m);
   }
 
   public IntegerMap(DataMap map)
   {
     super(map, SCHEMA, Integer.class, Integer.class);
+  }
+
+  public void put(String key, int value)
+  {
+    CheckedUtil.putWithoutChecking(_map, key, value);
   }
 
   @Override
@@ -78,5 +88,45 @@ public final class IntegerMap extends DirectMapTemplate<Integer>
   protected Integer coerceOutput(Object object) throws TemplateOutputCastException
   {
     return DataTemplateUtil.coerceIntOutput(object);
+  }
+
+  public static class IntegerSpecificValueMap extends SpecificValueMapTemplate<Integer>
+  {
+    public IntegerSpecificValueMap()
+    {
+      super(Integer.class);
+    }
+
+    public IntegerSpecificValueMap(int capacity)
+    {
+      super(capacity, Integer.class);
+    }
+
+    public IntegerSpecificValueMap(int capacity, float loadFactor)
+    {
+      super(capacity, loadFactor, Integer.class);
+    }
+
+    @Override
+    protected void specificTraverse(Integer object, Data.TraverseCallback callback, Data.CycleChecker cycleChecker)
+        throws IOException
+    {
+      callback.integerValue(object);
+    }
+  }
+
+  private static class IntegerMapSpecificDataComplexProvider implements SpecificDataComplexProvider
+  {
+    @Override
+    public Map<String, Object> getMap()
+    {
+      return new IntegerSpecificValueMap();
+    }
+
+    @Override
+    public Map<String, Object> getMap(int capacity)
+    {
+      return new IntegerSpecificValueMap(capacity);
+    }
   }
 }
